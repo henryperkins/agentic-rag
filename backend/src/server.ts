@@ -40,7 +40,7 @@ function validateQdrantConfig() {
   }
 }
 
-async function build() {
+export async function build() {
   const app = Fastify({ logger: true });
 
   // Validate Qdrant configuration before initialization
@@ -69,11 +69,19 @@ async function build() {
   await documentRoutes(app);
   await feedbackRoutes(app);
 
+  return app;
+}
+
+async function start() {
+  const app = await build();
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
   app.log.info(`Backend listening on http://localhost:${env.PORT}`);
 }
 
-build().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Start server if run directly (not imported)
+if (import.meta.url === `file://${process.argv[1]}`) {
+  start().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

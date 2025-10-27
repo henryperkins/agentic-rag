@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
 import type { DocumentRecord, BatchUploadResult, GitHubIngestRequest, GitHubIngestResult } from "../../../shared/types";
+import { DocumentViewer } from "./DocumentViewer";
 
 export function FileUpload() {
   const [docs, setDocs] = useState<DocumentRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [msgVariant, setMsgVariant] = useState<"info" | "success" | "error">("info");
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
 
   // GitHub ingestion state
   const [githubUrl, setGithubUrl] = useState("");
@@ -168,6 +170,10 @@ export function FileUpload() {
     setCurrentPage(1); // Reset to first page when changing page size
   };
 
+  if (selectedDocumentId) {
+    return <DocumentViewer documentId={selectedDocumentId} onClose={() => setSelectedDocumentId(null)} />;
+  }
+
   return (
     <section className="stack">
       <header className="stack">
@@ -293,13 +299,22 @@ export function FileUpload() {
                   {d.source || "upload"} — {new Date(d.created_at).toLocaleString()}
                 </div>
               </div>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => del(d.id)}
-              >
-                Delete
-              </button>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setSelectedDocumentId(d.id)}
+                >
+                  View
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => del(d.id)}
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           ))}
           {docs.length === 0 && <li className="doc-meta">No documents yet. Upload a file or ingest from GitHub to get started.</li>}

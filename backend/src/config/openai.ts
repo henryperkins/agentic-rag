@@ -173,7 +173,7 @@ async function realChat(messages: Message[]): Promise<string> {
     model: "gpt-4o-mini",
     input: messages.map((message) => ({
       role: message.role,
-      content: [{ type: "text", text: message.content }]
+      content: [{ type: "input_text", text: message.content }]
     })),
     store: false,
     metadata: { app: "rag-chat", purpose: "answer" }
@@ -210,7 +210,7 @@ async function realChatStream(
     model: "gpt-4o-mini",
     input: messages.map((message) => ({
       role: message.role,
-      content: [{ type: "text", text: message.content }]
+      content: [{ type: "input_text", text: message.content }]
     })),
     stream: true,
     store: false,
@@ -318,6 +318,7 @@ async function realWebSearch(
     response = await realOpenAI.responses.create({
       model: "gpt-4o-mini",
       tools: [webSearchTool],
+      tool_choice: { type: "web_search" }, // Force web search to be used
       include: ["web_search_call.action.sources"], // Get all sources consulted
       input: query,
       store: false,
@@ -351,47 +352,55 @@ async function realWebSearch(
       }
     }
 
-    // Extract citations from message annotations
+    // Extract the synthesized answer and citations from message
     if (item.type === "message") {
       console.log("[WebSearch] Message content items:", item.content?.length || 0);
       for (const content of item.content || []) {
         console.log("[WebSearch] Content type:", content.type, "annotations:", content.annotations?.length || 0);
-        if (content.type === "output_text" && content.annotations) {
-          for (const annotation of content.annotations) {
-            console.log("[WebSearch] Annotation type:", annotation.type);
-            if (annotation.type === "url_citation") {
-              // Avoid duplicate URLs
-              if (seenUrls.has(annotation.url)) continue;
-              seenUrls.add(annotation.url);
+        if (content.type === "output_text") {
+          const fullText = content.text || "";
 
-              // Extract snippet from the cited text
-              const snippet = content.text.substring(
-                annotation.start_index,
-                annotation.end_index
-              );
+          // If we have a synthesized answer with annotations, create a main result
+          if (fullText && content.annotations && content.annotations.length > 0) {
+            // Add the main synthesized answer as the first result
+            const citedUrls = content.annotations
+              .filter((a: any) => a.type === "url_citation")
+              .map((a: any) => a.url);
 
-              console.log("[WebSearch] Found citation:", annotation.url);
-              results.push({
-                title: annotation.title || new URL(annotation.url).hostname,
-                url: annotation.url,
-                snippet: snippet.trim(),
-                citationStart: annotation.start_index,
-                citationEnd: annotation.end_index,
-                relevance: 1.0 / (results.length + 1) // OpenAI orders by relevance
-              });
+            results.push({
+              title: "Web Search Summary",
+              url: citedUrls[0] || "", // Use first citation URL
+              snippet: fullText.trim(),
+              relevance: 1.0
+            });
+            console.log('[WebSearch] Added synthesized answer, length:', fullText.length);
 
-              // Stop once we have enough results
-              if (results.length >= maxResults) break;
+            // Also add individual citations for reference (up to maxResults total)
+            for (const annotation of content.annotations) {
+              if (annotation.type === "url_citation" && results.length < maxResults) {
+                if (seenUrls.has(annotation.url)) continue;
+                seenUrls.add(annotation.url);
+
+                console.log("[WebSearch] Found citation:", annotation.url);
+                results.push({
+                  title: annotation.title || new URL(annotation.url).hostname,
+                  url: annotation.url,
+                  snippet: annotation.title || new URL(annotation.url).hostname,
+                  citationStart: annotation.start_index,
+                  citationEnd: annotation.end_index,
+                  relevance: 1.0 / results.length
+                });
+              }
             }
+            break;
           }
         }
-        if (results.length >= maxResults) break;
       }
     }
     if (results.length >= maxResults) break;
   }
 
-  console.log("[WebSearch] Extracted", results.length, "citations from annotations");
+  console.log("[WebSearch] Extracted", results.length, "results (synthesized answer + citations)");
 
   // Fallback: If no citations found, try to extract from output_text
   if (results.length === 0 && response.output_text) {
@@ -458,6 +467,7 @@ async function realWebSearchStream(
   const stream = await realOpenAI.responses.create({
     model: "gpt-4o-mini",
     tools: [webSearchTool],
+    tool_choice: { type: "web_search" }, // Force web search to be used
     include: ["web_search_call.action.sources"],
     input: query,
     stream: true,
@@ -511,44 +521,62 @@ async function realWebSearchStream(
 
         // Process output items to extract citations
         const response = event.response;
+        console.log('[WebSearch] Full response structure:', JSON.stringify(response, null, 2));
+        console.log('[WebSearch] Output items count:', response?.output?.length || 0);
+
         for (const item of response?.output || []) {
+          console.log('[WebSearch] Item structure:', JSON.stringify(item, null, 2));
           // Extract search metadata
           if (item.type === "web_search_call" && item.action) {
+            console.log('[WebSearch] Found web_search_call, action type:', item.action.type);
             if (item.action.type === "search") {
               metadata.searchQuery = item.action.query;
               metadata.domainsSearched = item.action.domains;
               metadata.allSources = item.action.sources?.map((s: any) => s.url) || [];
+              console.log('[WebSearch] Extracted metadata:', metadata);
             }
           }
 
-          // Extract citations from message annotations
+          // Extract the synthesized answer and citations from message
           if (item.type === "message") {
             for (const content of item.content || []) {
-              if (content.type === "output_text" && content.annotations) {
-                for (const annotation of content.annotations) {
-                  if (annotation.type === "url_citation") {
-                    if (seenUrls.has(annotation.url)) continue;
-                    seenUrls.add(annotation.url);
+              if (content.type === "output_text") {
+                const fullText = content.text || "";
 
-                    const snippet = content.text.substring(
-                      annotation.start_index,
-                      annotation.end_index
-                    );
+                // If we have a synthesized answer with annotations, create a main result
+                if (fullText && content.annotations && content.annotations.length > 0) {
+                  // Add the main synthesized answer as the first result
+                  const citedUrls = content.annotations
+                    .filter((a: any) => a.type === "url_citation")
+                    .map((a: any) => a.url);
 
-                    results.push({
-                      title: annotation.title || new URL(annotation.url).hostname,
-                      url: annotation.url,
-                      snippet: snippet.trim(),
-                      citationStart: annotation.start_index,
-                      citationEnd: annotation.end_index,
-                      relevance: 1.0 / (results.length + 1)
-                    });
+                  results.push({
+                    title: "Web Search Summary",
+                    url: citedUrls[0] || "", // Use first citation URL
+                    snippet: fullText.trim(),
+                    relevance: 1.0
+                  });
+                  console.log('[WebSearch] Added synthesized answer, length:', fullText.length);
 
-                    if (results.length >= maxResults) break;
+                  // Also add individual citations for reference (up to maxResults total)
+                  for (const annotation of content.annotations) {
+                    if (annotation.type === "url_citation" && results.length < maxResults) {
+                      if (seenUrls.has(annotation.url)) continue;
+                      seenUrls.add(annotation.url);
+
+                      results.push({
+                        title: annotation.title || new URL(annotation.url).hostname,
+                        url: annotation.url,
+                        snippet: annotation.title || new URL(annotation.url).hostname,
+                        citationStart: annotation.start_index,
+                        citationEnd: annotation.end_index,
+                        relevance: 1.0 / results.length
+                      });
+                    }
                   }
+                  break;
                 }
               }
-              if (results.length >= maxResults) break;
             }
           }
           if (results.length >= maxResults) break;

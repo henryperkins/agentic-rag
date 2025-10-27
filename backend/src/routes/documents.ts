@@ -2,10 +2,15 @@
 import { FastifyInstance } from "fastify";
 import { ingestDocument } from "../services/documents";
 import { ingestGitHubRepo } from "../services/github";
-import { listDocuments, deleteDocument } from "../db/sql";
+import { listDocuments, deleteDocument, getChunksForDocument } from "../db/sql";
 import { deleteDocumentQdrant } from "../db/qdrant";
 import { USE_DUAL_VECTOR_STORE } from "../config/constants";
-import type { BatchUploadResult, GitHubIngestRequest, GitHubIngestResult } from "../../../shared/types";
+import type {
+  BatchUploadResult,
+  GitHubIngestRequest,
+  GitHubIngestResult,
+  DocumentWithChunks
+} from "../../../shared/types";
 
 export async function documentRoutes(app: FastifyInstance) {
   app.post("/api/documents/upload", { logLevel: "info" }, async (req, reply) => {
@@ -88,6 +93,25 @@ export async function documentRoutes(app: FastifyInstance) {
   app.get("/api/documents", async (_req, reply) => {
     const docs = await listDocuments();
     reply.send({ documents: docs });
+  });
+
+  app.get("/api/documents/:id/full", async (req, reply) => {
+    const id = (req.params as any).id as string;
+    const documents = await listDocuments();
+    const document = documents.find((d: any) => d.id === id);
+
+    if (!document) {
+      reply.code(404).send({ error: "Document not found" });
+      return;
+    }
+
+    const chunks = await getChunksForDocument(id);
+    const payload: DocumentWithChunks = {
+      ...document,
+      chunks
+    };
+
+    reply.send(payload);
   });
 
   app.delete("/api/documents/:id", async (req, reply) => {

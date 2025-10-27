@@ -49,6 +49,16 @@ export async function deleteDocument(id: string) {
     id,
   });
 }
+export async function getChunksForDocument(documentId: string) {
+  return await withSpan("db.getChunksForDocument", async () => {
+    const { rows } = await query(
+      "SELECT chunk_index, content FROM chunks WHERE document_id = $1 ORDER BY chunk_index",
+      [documentId]
+    );
+    return rows as { chunk_index: number; content: string }[];
+  });
+}
+
 
 export async function deleteChunk(id: string) {
   await withSpan("db.deleteChunk", () => query("DELETE FROM chunks WHERE id = $1", [id]), { id });

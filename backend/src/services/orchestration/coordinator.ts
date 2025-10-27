@@ -65,7 +65,9 @@ export async function runCoordinator(
   sender: (e: SSEOutEvent) => void,
   opts: { useRag: boolean; useHybrid: boolean; useWeb: boolean; allowedDomains?: string[] }
 ) {
+  console.log('[Coordinator] Options received:', JSON.stringify(opts));
   const decision = await classifyQuery(message, opts);
+  console.log('[Coordinator] Classification result:', JSON.stringify(decision));
   sender({
     type: "agent_log",
     role: "planner",
@@ -84,8 +86,16 @@ export async function runCoordinator(
     return;
   }
 
-  // Allow web-only mode (when useWeb=true but useRag=false)
-  if ((!opts.useRag && !opts.useWeb) || decision.mode === "direct") {
+  // Handle case when no retrieval methods are enabled
+  if (!opts.useRag && !opts.useWeb) {
+    const text = "⚠️ No retrieval methods enabled. Please enable at least one of:\n\n- **Search Documents** (local knowledge base)\n- **Hybrid Search** (semantic + keyword)\n- **Web Search** (live internet results)";
+    for (const chunk of text.match(/.{1,60}/g) || []) sender({ type: "tokens", text: chunk, ts: Date.now() });
+    sender({ type: "final", text, citations: [], verified: false, ts: Date.now() });
+    return;
+  }
+
+  // Allow direct mode for simple queries (greetings, etc.)
+  if (decision.mode === "direct") {
     const text = `Direct mode: ${message}`;
     for (const chunk of text.match(/.{1,60}/g) || []) sender({ type: "tokens", text: chunk, ts: Date.now() });
     sender({ type: "final", text, citations: [], verified: false, ts: Date.now() });
@@ -281,6 +291,9 @@ export async function runCoordinator(
           approved = lows.slice(0, 3);
           // Continue with low-grade chunks but mark as low confidence
         } else {
+          // Detect web-only mode (no local RAG)
+          const isWebOnlyMode = !opts.useRag && opts.useWeb;
+
           // Provide detailed fallback guidance with accurate web search status
           const webSearchMsg = usedWeb
             ? (webChunksFound > 0
@@ -290,18 +303,34 @@ export async function runCoordinator(
                 ? `\n- Web search was not invoked (local results found but low quality)`
                 : `\n- Enable web search for broader coverage`);
 
-          const detailedFeedback = [
-            `No supporting evidence found in the current knowledge base.`,
-            `\n\n**Retrieved:** ${retrieved.length} chunks`,
-            `\n- High quality: ${highs.length}`,
-            `\n- Medium quality: ${mediums.length}`,
-            `\n- Low quality: ${lows.length}`,
-            `\n\n**Suggestions:**`,
-            `\n- Try rephrasing your question`,
-            `\n- Use different keywords or terminology`,
-            `\n- Expand the document corpus`,
-            webSearchMsg
-          ].join("");
+          // Different messaging for web-only mode vs RAG mode
+          let detailedFeedback: string;
+          if (isWebOnlyMode) {
+            detailedFeedback = [
+              `No results found from web search.`,
+              `\n\n**Search Status:**`,
+              `\n- Web search performed: ${usedWeb ? 'Yes' : 'No'}`,
+              `\n- Results retrieved: ${webChunksFound}`,
+              `\n\n**Suggestions:**`,
+              `\n- Try rephrasing your question with different keywords`,
+              `\n- Be more specific in your query`,
+              `\n- Check if your query requires very recent information`,
+              `\n- Consider uploading relevant documents to the knowledge base`
+            ].join("");
+          } else {
+            detailedFeedback = [
+              `No supporting evidence found in the current knowledge base.`,
+              `\n\n**Retrieved:** ${retrieved.length} chunks`,
+              `\n- High quality: ${highs.length}`,
+              `\n- Medium quality: ${mediums.length}`,
+              `\n- Low quality: ${lows.length}`,
+              `\n\n**Suggestions:**`,
+              `\n- Try rephrasing your question`,
+              `\n- Use different keywords or terminology`,
+              `\n- Expand the document corpus`,
+              webSearchMsg
+            ].join("");
+          }
 
           sender({
             type: "agent_log",

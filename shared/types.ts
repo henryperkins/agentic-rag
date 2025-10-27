@@ -81,6 +81,10 @@ export interface DocumentRecord {
   source: string | null;
   created_at: string; // ISO
 }
+export type DocumentWithChunks = DocumentRecord & {
+  chunks: Array<{ chunk_index: number; content: string }>;
+};
+
 
 export interface ChunkRecord {
   id: string;
