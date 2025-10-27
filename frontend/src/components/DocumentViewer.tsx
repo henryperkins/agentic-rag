@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DocumentWithChunks } from "../../../../shared/types";
+import type { DocumentWithChunks } from "../../../shared/types";
 
 const MAX_OVERLAP_CANDIDATE = 500;
 
