@@ -1,0 +1,25 @@
+{
+  "name": "rag-chat",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Production-grade Agentic RAG chat app (React/Vite + Fastify/OpenAI, Hybrid + Rerank + Self-Verification)",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "shared"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "db:setup": "npm -w backend run db:setup",
+    "db:migrate": "npm -w backend run db:migrate",
+    "ingest:samples": "npm -w backend run ingest:samples",
+    "dev": "concurrently -r \"npm -w backend run dev\" \"npm -w frontend run dev\"",
+    "test": "npm -w backend run test",
+    "typecheck": "npm -w backend run typecheck && npm -w frontend run typecheck && npm -w shared run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}
