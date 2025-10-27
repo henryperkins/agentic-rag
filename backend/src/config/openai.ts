@@ -158,12 +158,20 @@ async function mockWebSearchStream(
 
 let realOpenAI: any = null;
 
-async function realEmbed(texts: string[], dims: number): Promise<number[][]> {
+function initOpenAI() {
   if (!realOpenAI) {
-    const { OpenAI } = await import("openai");
-    realOpenAI = new OpenAI();
+    const { OpenAI } = require("openai");
+    realOpenAI = new OpenAI({
+      timeout: 30000, // 30 second timeout for all API calls
+      maxRetries: 2 // Retry twice on failure
+    });
   }
-  const res = await realOpenAI.embeddings.create({
+  return realOpenAI;
+}
+
+async function realEmbed(texts: string[], dims: number): Promise<number[][]> {
+  const client = initOpenAI();
+  const res = await client.embeddings.create({
     input: texts,
     model: "text-embedding-3-small",
     dimensions: dims
@@ -172,11 +180,8 @@ async function realEmbed(texts: string[], dims: number): Promise<number[][]> {
 }
 
 async function realChat(messages: Message[]): Promise<string> {
-  if (!realOpenAI) {
-    const { OpenAI } = await import("openai");
-    realOpenAI = new OpenAI();
-  }
-  const response = await realOpenAI.responses.create({
+  const client = initOpenAI();
+  const response = await client.responses.create({
     model: "gpt-4o-mini",
     input: messages.map((message) => ({
       role: message.role,
@@ -208,12 +213,9 @@ async function realChatStream(
   messages: Message[],
   onDelta: (text: string) => void
 ): Promise<string> {
-  if (!realOpenAI) {
-    const { OpenAI } = await import("openai");
-    realOpenAI = new OpenAI();
-  }
+  const client = initOpenAI();
 
-  const stream = await realOpenAI.responses.create({
+  const stream = await client.responses.create({
     model: "gpt-4o-mini",
     input: messages.map((message) => ({
       role: message.role,
@@ -290,10 +292,7 @@ async function realWebSearch(
   query: string,
   options: WebSearchOptions
 ): Promise<{ results: WebSearchResult[], metadata: WebSearchMetadata }> {
-  if (!realOpenAI) {
-    const { OpenAI } = await import("openai");
-    realOpenAI = new OpenAI();
-  }
+  const client = initOpenAI();
 
   const maxResults = Math.min(Math.max(options.maxResults, 1), 8);
 
@@ -322,7 +321,7 @@ async function realWebSearch(
 
   let response;
   try {
-    response = await realOpenAI.responses.create({
+    response = await client.responses.create({
       model: "gpt-4o-mini",
       tools: [webSearchTool],
       tool_choice: { type: "web_search" }, // Force web search to be used
@@ -441,10 +440,7 @@ async function realWebSearchStream(
   options: WebSearchOptions,
   onProgress: (event: { type: string; data?: any }) => void
 ): Promise<{ results: WebSearchResult[], metadata: WebSearchMetadata }> {
-  if (!realOpenAI) {
-    const { OpenAI } = await import("openai");
-    realOpenAI = new OpenAI();
-  }
+  const client = initOpenAI();
 
   const maxResults = Math.min(Math.max(options.maxResults, 1), 8);
 
@@ -471,7 +467,7 @@ async function realWebSearchStream(
   console.log("[WebSearch] Calling OpenAI with streaming query:", query);
   console.log("[WebSearch] Tool config:", JSON.stringify(webSearchTool, null, 2));
 
-  const stream = await realOpenAI.responses.create({
+  const stream = await client.responses.create({
     model: "gpt-4o-mini",
     tools: [webSearchTool],
     tool_choice: { type: "web_search" }, // Force web search to be used

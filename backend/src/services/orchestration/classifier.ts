@@ -122,6 +122,31 @@ Respond with ONLY valid JSON in this exact format:
 }
 
 /**
+ * Timeout wrapper to prevent hanging API calls
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutId!);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId!);
+    throw error;
+  }
+}
+
+/**
  * Main classifier with LLM support and fallback to heuristics
  */
 export async function classifyQuery(
@@ -133,7 +158,12 @@ export async function classifyQuery(
   }
 
   try {
-    return await classifyQueryLLM(q, opts);
+    // Add 10 second timeout to LLM classifier to prevent hanging
+    return await withTimeout(
+      classifyQueryLLM(q, opts),
+      10000,
+      "LLM classifier timed out after 10 seconds"
+    );
   } catch (error) {
     console.warn("LLM classifier failed, falling back to heuristics:", error);
     return classifyQueryHeuristic(q, opts);
