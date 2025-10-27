@@ -27,7 +27,9 @@ export interface RetrievedChunk {
   citationEnd?: number;
 }
 
-export async function hybridRetrieve(queryText: string, useHybrid = true): Promise<RetrievedChunk[]> {
+export type HybridRetrieveResult = RetrievedChunk[] & { queryEmbedding: number[] };
+
+export async function hybridRetrieve(queryText: string, useHybrid = true): Promise<HybridRetrieveResult> {
   addEvent("retrieval.hybrid.start", {
     useHybrid,
     dualStore: USE_DUAL_VECTOR_STORE,
@@ -70,10 +72,10 @@ export async function hybridRetrieve(queryText: string, useHybrid = true): Promi
   const trigramChunks =
     titleDocIds.length > 0
       ? await withSpan(
-          "retrieval.fetchTrigramChunks",
-          () => chunksByDocumentIds(titleDocIds, 2),
-          { docCount: titleDocIds.length }
-        )
+        "retrieval.fetchTrigramChunks",
+        () => chunksByDocumentIds(titleDocIds, 2),
+        { docCount: titleDocIds.length }
+      )
       : [];
 
   addEvent("retrieval.trigram.completed", {
@@ -139,7 +141,7 @@ export async function hybridRetrieve(queryText: string, useHybrid = true): Promi
     topScore: top[0]?.preScore ?? null
   });
   // Map results with source from database/Qdrant and preserve reranker score
-  return top.map((c) => ({
+  const mapped = top.map((c) => ({
     id: c.id,
     document_id: c.document_id,
     chunk_index: c.chunk_index,
@@ -148,4 +150,8 @@ export async function hybridRetrieve(queryText: string, useHybrid = true): Promi
     score: c.preScore,
     rerankerScore: c.preScore // Preserve for downstream grading integration
   }));
+
+  const result = mapped as HybridRetrieveResult;
+  result.queryEmbedding = qEmb;
+  return result;
 }

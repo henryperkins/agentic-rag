@@ -3,7 +3,7 @@ type Entry<T> = { value: T; exp: number };
 
 export class TTLCache<T> {
   private store = new Map<string, Entry<T>>();
-  constructor(private ttlMs = 60_000, private max = 500) {}
+  constructor(private ttlMs = 60_000, private max = 500) { }
 
   get(key: string): T | undefined {
     const e = this.store.get(key);
@@ -29,7 +29,7 @@ export class TTLCache<T> {
 
 // A tiny semantic-ish cache by normalized text key.
 export const responseCache = new TTLCache<string>(5 * 60_000, 200);
-export const retrievalCache = new TTLCache<any[]>(2 * 60_000, 200);
+export const retrievalCache = new TTLCache<{ chunks: any[]; queryEmbedding?: number[] }>(2 * 60_000, 200);
 
 export function normalize(s: string) {
   return s.toLowerCase().replace(/\s+/g, " ").trim();

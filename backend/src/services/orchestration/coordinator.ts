@@ -7,8 +7,16 @@ import { normalize, responseCache, retrievalCache } from "../cache";
 import {
   MAX_VERIFICATION_LOOPS,
   ALLOW_LOW_GRADE_FALLBACK,
-  CACHE_FAILURES
+  CACHE_FAILURES,
+  ENABLE_QUERY_REWRITING
 } from "../../config/constants";
+import { maybeRewriteQuery, persistRewrite } from "../query";
+import type { RetrievedChunk } from "../retrieval";
+
+type RetrievalPayload = {
+  chunks: RetrievedChunk[];
+  queryEmbedding?: number[];
+};
 
 /**
  * Cleans chunk content by removing metadata and frontmatter
@@ -102,9 +110,37 @@ export async function runCoordinator(
     return;
   }
 
+  let working = message;
+  if (ENABLE_QUERY_REWRITING) {
+    const { rewritten, reason } = maybeRewriteQuery(working);
+    if (rewritten && rewritten !== working) {
+      sender({
+        type: "agent_log",
+        role: "planner",
+        message: `Rewriting query (${reason})…`,
+        ts: Date.now()
+      });
+      sender({ type: "rewrite", original: message, rewritten, ts: Date.now() });
+      try {
+        await withSpan(
+          "query.persistRewrite",
+          () => persistRewrite(message, rewritten),
+          { applied: true }
+        );
+      } catch (err) {
+        console.warn("[Coordinator] Failed to persist rewrite", err);
+      }
+      working = rewritten;
+      addEvent("query.rewrite", { enabled: true, applied: true, reason });
+    } else {
+      addEvent("query.rewrite", { enabled: true, applied: false, reason });
+    }
+  } else {
+    addEvent("query.rewrite", { enabled: false, applied: false });
+  }
+
   // Retrieve → process → generate → verify with bounded loops
   let loops = 0;
-  let working = message;
   const targetsKey = decision.targets.slice().sort().join("+");
   const allowWeb = opts.useWeb;
   // Track web search state outside span for error messages
@@ -128,13 +164,18 @@ export async function runCoordinator(
 
       const cacheKey = normalize(`ret:${targetsKey}:${working}`);
       const canUseCache = !(allowWeb && decision.targets.includes("web"));
-      let retrieved = canUseCache ? retrievalCache.get(cacheKey) : undefined;
+      let payload = (canUseCache ? retrievalCache.get(cacheKey) : undefined) as RetrievalPayload | undefined;
       let webMetadata: { searchQuery?: string; domainsSearched?: string[]; allSources?: string[] } | null = null;
 
-      if (!retrieved) {
-        // Only retrieve from local store if useRag is enabled
-        const vectorResults = opts.useRag ? await Agents.retrieval.hybridRetrieve(working, opts.useHybrid) : [];
-        let combined = vectorResults.slice();
+      if (!payload) {
+        let combined: RetrievedChunk[] = [];
+        let queryEmbedding: number[] | undefined;
+
+        if (opts.useRag) {
+          const vectorResults = await Agents.retrieval.hybridRetrieve(working, opts.useHybrid);
+          queryEmbedding = vectorResults.queryEmbedding;
+          combined = combined.concat(vectorResults);
+        }
 
         if (decision.targets.includes("sql")) {
           const sqlResults = await withSpan(
@@ -192,11 +233,18 @@ export async function runCoordinator(
           }
         }
 
-        retrieved = combined;
+        payload = { chunks: combined, queryEmbedding };
         if (canUseCache && !usedWeb) {
-          retrievalCache.set(cacheKey, retrieved);
+          retrievalCache.set(cacheKey, payload);
         }
       }
+
+      if (!payload) {
+        payload = { chunks: [], queryEmbedding: undefined };
+      }
+
+      const retrieved = payload.chunks;
+      const queryEmbedding = payload.queryEmbedding;
 
       if (usedWeb && webMetadata) {
         // Emit web search metadata for frontend display
@@ -223,21 +271,21 @@ export async function runCoordinator(
         ts: Date.now()
       });
 
-      // Grade chunks with semantic understanding if embeddings available
-      // Note: qEmb already computed during retrieval
+      // Grade chunks with semantic understanding when embeddings are available
       const grades = await withSpan("grade", async () => {
         // Use gradeChunksWithScores to get both grades and metadata
         const { grades: gradeResult, metadata } = await Agents.processing.gradeChunksWithScores(
           working,
           retrieved.map((r) => ({ id: r.id, content: r.content })),
-          undefined // We don't have qEmb here, so it will use keyword-based grading for now
+          queryEmbedding
         );
 
         // Log grading metadata for observability
         addEvent("grade.completed", {
           method: metadata.method,
           totalChunks: retrieved.length,
-          scores: Object.values(metadata.scores)
+          scores: Object.values(metadata.scores),
+          usedEmbedding: Boolean(queryEmbedding)
         });
 
         return gradeResult;
@@ -297,11 +345,11 @@ export async function runCoordinator(
           // Provide detailed fallback guidance with accurate web search status
           const webSearchMsg = usedWeb
             ? (webChunksFound > 0
-                ? `\n- Web search returned ${webChunksFound} results but none met quality threshold`
-                : `\n- Web search returned no results`)
+              ? `\n- Web search returned ${webChunksFound} results but none met quality threshold`
+              : `\n- Web search returned no results`)
             : (allowWeb
-                ? `\n- Web search was not invoked (local results found but low quality)`
-                : `\n- Enable web search for broader coverage`);
+              ? `\n- Web search was not invoked (local results found but low quality)`
+              : `\n- Enable web search for broader coverage`);
 
           // Different messaging for web-only mode vs RAG mode
           let detailedFeedback: string;

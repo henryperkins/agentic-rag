@@ -36,7 +36,7 @@ describe("Web-Only Mode", () => {
         expect(finalEvent).toBeDefined();
     });
 
-    it("should enter direct mode when both useRag=false and useWeb=false", async () => {
+    it("should surface the direct-mode warning when both useRag=false and useWeb=false", async () => {
         const events: SSEOutEvent[] = [];
         const sender = (e: SSEOutEvent) => {
             events.push(e);
@@ -48,9 +48,9 @@ describe("Web-Only Mode", () => {
             { useRag: false, useHybrid: false, useWeb: false }
         );
 
-        // Should enter direct mode
+        // Should surface the direct mode warning
         const textEvents = events.filter(e => e.type === "tokens").map(e => (e as any).text).join("");
-        expect(textEvents).toContain("Direct mode");
+        expect(textEvents).toContain("No retrieval methods enabled. Please enable at least one of:");
 
         const finalEvent = events.find(e => e.type === "final");
         expect(finalEvent).toBeDefined();

@@ -62,5 +62,5 @@ export const env = {
   // Fallback Configuration
   ENABLE_QUERY_REWRITING: process.env.ENABLE_QUERY_REWRITING === "true",
   ALLOW_LOW_GRADE_FALLBACK: process.env.ALLOW_LOW_GRADE_FALLBACK === "true",
-  CACHE_FAILURES: process.env.CACHE_FAILURES !== "false" // Default true for backward compat
+  CACHE_FAILURES: process.env.CACHE_FAILURES === "true"
 };
