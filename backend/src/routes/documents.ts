@@ -14,6 +14,8 @@ import type {
 } from "../../../shared/types";
 
 export async function documentRoutes(app: FastifyInstance) {
+  const isUuid = (value: string) => /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value);
+
   app.post("/api/documents/upload", { logLevel: "info" }, async (req, reply) => {
     const mp = await req.file({ limits: { fileSize: 5 * 1024 * 1024 } });
     if (!mp) {
@@ -110,6 +112,11 @@ export async function documentRoutes(app: FastifyInstance) {
 
   app.get("/api/documents/:id/full", async (req, reply) => {
     const id = (req.params as any).id as string;
+
+    if (!isUuid(id)) {
+      reply.code(404).send({ error: "Document not found" });
+      return;
+    }
 
     const document = await getDocumentById(id);
     if (!document) {

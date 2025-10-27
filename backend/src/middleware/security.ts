@@ -6,45 +6,66 @@ import { rateLimitEnforcedCounter, rateLimitRejectionsCounter } from "../config/
 const CAP = 60; // tokens
 const REFILL_RATE_PER_SEC = 1; // refill per second
 
+let rateLimitTableMissingLogged = false;
+
+type PgError = Error & { code?: string };
+
+function isMissingRateLimitTable(error: unknown): error is PgError {
+  return Boolean((error as PgError)?.code && (error as PgError).code === "42P01");
+}
+
 export async function onRequestRateLimit(req: FastifyRequest, reply: FastifyReply) {
   const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip;
 
-  await withTx(async (client) => {
-    const { rows } = await client.query(
-      "SELECT tokens, last_refill FROM rate_limits WHERE ip_address = $1 FOR UPDATE",
-      [ip]
-    );
+  try {
+    await withTx(async (client) => {
+      const { rows } = await client.query(
+        "SELECT tokens, last_refill FROM rate_limits WHERE ip_address = $1 FOR UPDATE",
+        [ip]
+      );
 
-    const now = new Date();
-    let tokens = CAP;
-    let lastRefill = now;
+      const now = new Date();
+      let tokens = CAP;
+      let lastRefill = now;
 
-    if (rows.length > 0) {
-      const row = rows[0] as any;
-      const delta = (now.getTime() - new Date(row.last_refill).getTime()) / 1000;
-      tokens = Math.min(CAP, Number(row.tokens) + delta * REFILL_RATE_PER_SEC);
-      lastRefill = now;
-    }
+      if (rows.length > 0) {
+        const row = rows[0] as any;
+        const delta = (now.getTime() - new Date(row.last_refill).getTime()) / 1000;
+        tokens = Math.floor(Math.min(CAP, Number(row.tokens) + delta * REFILL_RATE_PER_SEC));
+        lastRefill = now;
+      }
 
-    if (tokens < 1) {
-      rateLimitRejectionsCounter.inc({ ip });
-      reply.code(429).send({ error: "rate_limited" });
+      if (tokens < 1) {
+        rateLimitRejectionsCounter.inc({ ip });
+        reply.code(429).send({ error: "rate_limited" });
+        return;
+      }
+
+      tokens -= 1;
+      rateLimitEnforcedCounter.inc({ ip });
+
+      await client.query(
+        `
+        INSERT INTO rate_limits (ip_address, tokens, last_refill)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (ip_address)
+        DO UPDATE SET tokens = $2, last_refill = $3
+        `,
+        [ip, tokens, lastRefill]
+      );
+    });
+  } catch (error) {
+    if (isMissingRateLimitTable(error)) {
+      if (!rateLimitTableMissingLogged) {
+        rateLimitTableMissingLogged = true;
+        req.log.warn(
+          "rate_limits table missing; skipping rate limiting. Run `npm run db:setup && npm run db:migrate` to create it."
+        );
+      }
       return;
     }
-
-    tokens -= 1;
-    rateLimitEnforcedCounter.inc({ ip });
-
-    await client.query(
-      `
-      INSERT INTO rate_limits (ip_address, tokens, last_refill)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (ip_address)
-      DO UPDATE SET tokens = $2, last_refill = $3
-      `,
-      [ip, tokens, lastRefill]
-    );
-  });
+    throw error;
+  }
 }
 
 // Very light "auth" stub to mirror OIDC/JWT gate; accepts Bearer but doesn't verify in MOCK.

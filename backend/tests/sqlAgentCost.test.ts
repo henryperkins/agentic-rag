@@ -53,7 +53,7 @@ describe("SQL Agent Cost Controls", () => {
 
     const request: SqlAgentRequest = { message: "show all documents" };
 
-    // This will throw because we're not mocking the database, but it will pass the cost check
-    await expect(runSqlAgent(request)).rejects.toThrow();
+    const rows = await runSqlAgent(request);
+    expect(Array.isArray(rows)).toBe(true);
   });
 });

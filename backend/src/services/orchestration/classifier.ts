@@ -25,8 +25,22 @@ export function classifyQueryHeuristic(
   const recencyIndicators = /\b(latest|today|yesterday|current|news|update|recent|202[4-9]|2025)\b/i.test(
     q
   );
+  const trimmed = q.trim();
+  const isGreeting = /^(hi|hello|hey|thanks|thank you|good\s+(morning|afternoon|evening)|hola|yo)\b/i.test(
+    trimmed
+  );
   const complexity = hasOps ? (len > 12 ? "high" : "medium") : len < 6 ? "low" : "medium";
-  const mode: "retrieve" | "direct" = hasOps || len > 6 ? "retrieve" : "direct";
+
+  let mode: "retrieve" | "direct";
+  if (hasOps || len > 6) {
+    mode = "retrieve";
+  } else if (isGreeting) {
+    mode = "direct";
+  } else if (!opts.useRag) {
+    mode = "direct";
+  } else {
+    mode = "retrieve";
+  }
 
   const targets: RetrievalTarget[] = [];
   // Respect user's choice for RAG

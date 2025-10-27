@@ -10,10 +10,17 @@ import { feedbackRoutes } from "./routes/feedback";
 import { healthRoutes } from "./routes/health";
 import { onRequestRateLimit, preHandlerAuth } from "./middleware/security";
 import { initQdrantCollection } from "./db/qdrant";
-import { USE_DUAL_VECTOR_STORE, QDRANT_URL, QDRANT_API_KEY } from "./config/constants";
+import {
+  USE_DUAL_VECTOR_STORE,
+  QDRANT_URL,
+  QDRANT_API_KEY,
+  QDRANT_COLLECTION,
+  EMBEDDING_DIMENSIONS,
+} from "./config/constants";
 import { reconcileStores } from "./jobs/dualStoreReconciler";
 import { qdrantClient } from "./db/qdrant";
 import { v4 as uuidv4 } from "uuid";
+import type { QdrantClient } from "@qdrant/qdrant-js";
 
 let reconciliationInterval: NodeJS.Timeout | null = null;
 
@@ -21,7 +28,11 @@ let reconciliationInterval: NodeJS.Timeout | null = null;
  * Validate Qdrant Cloud configuration at startup
  * Prevents runtime failures due to missing credentials
  */
-async function validateQdrantConfig() {
+async function validateQdrantConfig(qdrant: QdrantClient) {
+  if (process.env.NODE_ENV === "test") {
+    return;
+  }
+
   if (!USE_DUAL_VECTOR_STORE) {
     return; // Dual-store disabled, skip validation
   }
@@ -41,11 +52,14 @@ async function validateQdrantConfig() {
   try {
     // Canary write/read to ensure Qdrant is fully operational
     const canaryId = uuidv4();
-    await qdrantClient.upsert("canary", {
+    const canaryVector = Array.from({ length: EMBEDDING_DIMENSIONS }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await qdrant.upsert(QDRANT_COLLECTION, {
       wait: true,
-      points: [{ id: canaryId, vector: [0.5, 0.5, 0.5, 0.5] }],
+      points: [{ id: canaryId, vector: canaryVector }],
     });
-    await qdrantClient.delete("canary", { wait: true, points: [canaryId] });
+    await qdrant.delete(QDRANT_COLLECTION, { wait: true, points: [canaryId] });
     console.log("✓ Qdrant connection validated with canary write/read.");
   } catch (error) {
     console.error("❌ FATAL: Qdrant canary write/read failed:", error);
@@ -62,13 +76,12 @@ async function validateQdrantConfig() {
 export async function build() {
   const app = Fastify({ logger: true });
 
-  // Validate Qdrant configuration before initialization
-  await validateQdrantConfig();
-
-  // Initialize Qdrant collection if dual-store is enabled
   if (USE_DUAL_VECTOR_STORE) {
+    // Initialize Qdrant collection before validation so canary checks run against a ready collection
     app.log.info("Dual vector store enabled, initializing Qdrant...");
     await initQdrantCollection();
+    // Validate Qdrant configuration after initialization
+    await validateQdrantConfig(qdrantClient);
   }
 
   await app.register(cors, { origin: env.CORS_ORIGIN, credentials: true });

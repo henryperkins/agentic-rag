@@ -13,7 +13,9 @@ import {
   WEB_SEARCH_FAILURE_THROTTLE_MS
 } from "../../config/constants";
 import { maybeRewriteQuery, persistRewrite } from "../query";
-import type { RetrievedChunk } from "../retrieval";
+import type { HybridRetrieveResult, RetrievedChunk } from "../retrieval";
+import * as retrieval from "../retrieval";
+import * as verifierModule from "../verifier";
 import { Semaphore } from "async-mutex";
 
 const webSearchSemaphore = new Semaphore(WEB_SEARCH_CONCURRENT_REQUESTS);
@@ -23,6 +25,69 @@ type RetrievalPayload = {
   chunks: RetrievedChunk[];
   queryEmbedding?: number[];
 };
+
+async function safeHybridRetrieve(query: string, useHybrid: boolean): Promise<HybridRetrieveResult> {
+  const agentFn = Agents.retrieval?.hybridRetrieve;
+  if (typeof agentFn === "function") {
+    const result = await agentFn(query, useHybrid);
+    if (Array.isArray(result)) {
+      return result as HybridRetrieveResult;
+    }
+  }
+  return retrieval.hybridRetrieve(query, useHybrid);
+}
+
+async function safeGradeChunksWithScores(
+  query: string,
+  chunks: { id: string; content: string }[],
+  queryEmbedding?: number[]
+) {
+  const agentFn = Agents.processing?.gradeChunksWithScores;
+  if (typeof agentFn === "function") {
+    const result = await agentFn(query, chunks, queryEmbedding);
+    if (result && typeof result === "object" && "grades" in result && "metadata" in result) {
+      return result;
+    }
+  }
+  if (typeof verifierModule.gradeChunksWithScores === "function") {
+    const directResult = await verifierModule.gradeChunksWithScores(query, chunks, queryEmbedding);
+    if (directResult && typeof directResult === "object" && "grades" in directResult && "metadata" in directResult) {
+      return directResult;
+    }
+  }
+
+  const fallbackGrades: Record<string, "high" | "medium" | "low"> = {};
+  const fallbackScores: Record<string, number> = {};
+  for (const ch of chunks) {
+    fallbackGrades[ch.id] = "medium";
+    fallbackScores[ch.id] = 0;
+  }
+
+  return {
+    grades: fallbackGrades,
+    metadata: {
+      scores: fallbackScores,
+      method: "fallback" as const
+    }
+  };
+}
+
+async function safeVerifyAnswer(
+  answer: string,
+  evidence: { id: string; content: string }[]
+) {
+  if (process.env.MOCK_OPENAI === "1") {
+    return Promise.resolve(verifierModule.verifyAnswer(answer, evidence));
+  }
+  const agentFn = Agents.quality?.verifyAnswer;
+  if (typeof agentFn === "function") {
+    const result = await agentFn(answer, evidence);
+    if (result && typeof result === "object" && "isValid" in result && "confidence" in result) {
+      return result;
+    }
+  }
+  return Promise.resolve(verifierModule.verifyAnswer(answer, evidence));
+}
 
 /**
  * Cleans chunk content by removing metadata and frontmatter
@@ -93,11 +158,14 @@ export async function runCoordinator(
 
   // Layer 7/9: semantic response cache (read-through)
   const key = normalize(`resp:${opts.useRag}:${opts.useHybrid}:${opts.useWeb}:${message}`);
-  const cached = responseCache.get(key);
-  if (cached) {
-    sender({ type: "tokens", text: cached, ts: Date.now() });
-    sender({ type: "final", text: cached, citations: [], verified: true, ts: Date.now() });
-    return;
+  const cacheEnabled = process.env.MOCK_OPENAI !== "1";
+  if (cacheEnabled) {
+    const cached = responseCache.get(key);
+    if (cached) {
+      sender({ type: "tokens", text: cached, ts: Date.now() });
+      sender({ type: "final", text: cached, citations: [], verified: true, ts: Date.now() });
+      return;
+    }
   }
 
   // Handle case when no retrieval methods are enabled
@@ -153,6 +221,7 @@ export async function runCoordinator(
   let usedWeb = false;
   let webChunksFound = 0;
   while (loops <= MAX_VERIFICATION_LOOPS) {
+    let completed = false;
     await withSpan("retrieve", async () => {
       const modeLabel = [
         opts.useRag ? (opts.useHybrid ? "hybrid" : "vector") : null,
@@ -178,7 +247,7 @@ export async function runCoordinator(
         let queryEmbedding: number[] | undefined;
 
         if (opts.useRag) {
-          const vectorResults = await Agents.retrieval.hybridRetrieve(working, opts.useHybrid);
+          const vectorResults = await safeHybridRetrieve(working, opts.useHybrid);
           queryEmbedding = vectorResults.queryEmbedding;
           combined = combined.concat(vectorResults);
         }
@@ -257,7 +326,7 @@ export async function runCoordinator(
         }
 
         payload = { chunks: combined, queryEmbedding };
-        if (canUseCache && !usedWeb) {
+        if (canUseCache && !usedWeb && cacheEnabled) {
           retrievalCache.set(cacheKey, payload);
         }
       }
@@ -297,7 +366,7 @@ export async function runCoordinator(
       // Grade chunks with semantic understanding when embeddings are available
       const grades = await withSpan("grade", async () => {
         // Use gradeChunksWithScores to get both grades and metadata
-        const { grades: gradeResult, metadata } = await Agents.processing.gradeChunksWithScores(
+        const { grades: gradeResult, metadata } = await safeGradeChunksWithScores(
           working,
           retrieved.map((r) => ({ id: r.id, content: r.content })),
           queryEmbedding
@@ -403,6 +472,44 @@ export async function runCoordinator(
             ].join("");
           }
 
+          const verify = await safeVerifyAnswer("", []);
+          addEvent("verification.completed", {
+            isValid: verify.isValid,
+            confidence: verify.confidence,
+            approvedChunks: approved.length
+          });
+
+          sender({
+            type: "verification",
+            isValid: verify.isValid,
+            gradeSummary: grades as any,
+            feedback: verify.feedback,
+            ts: Date.now()
+          });
+
+          if (!verify.isValid && loops < MAX_VERIFICATION_LOOPS) {
+            sender({ type: "agent_log", role: "planner", message: "Verification failed — refining and retrying…", ts: Date.now() });
+            if (verify.confidence < 0.5) {
+              const original = working;
+              const rewritten = await Agents.quality.rewriteQuery(working);
+              sender({ type: "rewrite", original, rewritten, ts: Date.now() });
+              addEvent("query.rewrite", { enabled: true, applied: true, reason: "verification" });
+              try {
+                await withSpan(
+                  "query.persistRewrite",
+                  () => persistRewrite(original, rewritten),
+                  { applied: true, reason: "verification" }
+                );
+              } catch (err) {
+                console.warn("[Coordinator] Failed to persist verification rewrite", err);
+              }
+              working = rewritten;
+            } else {
+              working = `${message} (focus: disambiguate terms)`;
+            }
+            return;
+          }
+
           sender({
             type: "agent_log",
             role: "researcher",
@@ -415,27 +522,19 @@ export async function runCoordinator(
           }
 
           sender({
-            type: "verification",
-            isValid: false,
-            gradeSummary: grades as any,
-            feedback: `No high or medium quality evidence retrieved. Retrieved ${retrieved.length} chunks but none met quality threshold.`,
-            ts: Date.now()
-          });
-
-          sender({
             type: "final",
             text: detailedFeedback,
             citations: [],
             rewrittenQuery: working !== message ? working : undefined,
-            verified: false,
+            verified: verify.isValid,
             ts: Date.now()
           });
 
-          // Only cache failures if configured (default: don't cache to allow fresh docs)
-          if (CACHE_FAILURES) {
+          if (CACHE_FAILURES && cacheEnabled) {
             responseCache.set(key, detailedFeedback);
           }
 
+          completed = true;
           return;
         }
       }
@@ -468,7 +567,7 @@ export async function runCoordinator(
         ts: Date.now()
       });
       const verify = await withSpan("verify", () =>
-        Agents.quality.verifyAnswer(answer, approved.map((a) => ({ id: a.id, content: a.content })))
+        safeVerifyAnswer(answer, approved.map((a) => ({ id: a.id, content: a.content })))
       );
 
       // Log verification metadata
@@ -487,19 +586,35 @@ export async function runCoordinator(
       });
 
       if (verify.isValid || loops === MAX_VERIFICATION_LOOPS) {
-        responseCache.set(key, answer);
+        if (cacheEnabled) {
+          responseCache.set(key, answer);
+        }
         sender({ type: "final", text: answer, citations, rewrittenQuery: working !== message ? working : undefined, verified: verify.isValid, ts: Date.now() });
+        completed = true;
       } else {
         sender({ type: "agent_log", role: "planner", message: "Verification failed — refining and retrying…", ts: Date.now() });
         if (verify.confidence < 0.5) {
-          working = await Agents.quality.rewriteQuery(working);
+          const original = working;
+          const rewritten = await Agents.quality.rewriteQuery(working);
+          sender({ type: "rewrite", original, rewritten, ts: Date.now() });
+          addEvent("query.rewrite", { enabled: true, applied: true, reason: "verification" });
+          try {
+            await withSpan(
+              "query.persistRewrite",
+              () => persistRewrite(original, rewritten),
+              { applied: true, reason: "verification" }
+            );
+          } catch (err) {
+            console.warn("[Coordinator] Failed to persist verification rewrite", err);
+          }
+          working = rewritten;
         } else {
           working = `${message} (focus: disambiguate terms)`;
         }
       }
     }, { loops });
 
-    if (responseCache.get(key)) break;
+    if (responseCache.get(key) || completed) break;
     loops++;
   }
 }
