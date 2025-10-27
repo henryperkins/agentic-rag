@@ -1,24 +1,50 @@
 // Layer 11: Security & Governance
 import { FastifyRequest, FastifyReply } from "fastify";
+import { query, withTx } from "../db/client";
+import { rateLimitEnforcedCounter, rateLimitRejectionsCounter } from "../config/metrics";
 
-// Simple in-memory token bucket by IP. Not for prod use—demonstrates L11.
-const buckets = new Map<string, { tokens: number; last: number }>();
 const CAP = 60; // tokens
 const REFILL_RATE_PER_SEC = 1; // refill per second
 
 export async function onRequestRateLimit(req: FastifyRequest, reply: FastifyReply) {
   const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip;
-  const now = Date.now() / 1000;
-  const b = buckets.get(ip) || { tokens: CAP, last: now };
-  const delta = now - b.last;
-  b.tokens = Math.min(CAP, b.tokens + delta * REFILL_RATE_PER_SEC);
-  b.last = now;
-  if (b.tokens < 1) {
-    reply.code(429).send({ error: "rate_limited" });
-    return;
-  }
-  b.tokens -= 1;
-  buckets.set(ip, b);
+
+  await withTx(async (client) => {
+    const { rows } = await client.query(
+      "SELECT tokens, last_refill FROM rate_limits WHERE ip_address = $1 FOR UPDATE",
+      [ip]
+    );
+
+    const now = new Date();
+    let tokens = CAP;
+    let lastRefill = now;
+
+    if (rows.length > 0) {
+      const row = rows[0] as any;
+      const delta = (now.getTime() - new Date(row.last_refill).getTime()) / 1000;
+      tokens = Math.min(CAP, Number(row.tokens) + delta * REFILL_RATE_PER_SEC);
+      lastRefill = now;
+    }
+
+    if (tokens < 1) {
+      rateLimitRejectionsCounter.inc({ ip });
+      reply.code(429).send({ error: "rate_limited" });
+      return;
+    }
+
+    tokens -= 1;
+    rateLimitEnforcedCounter.inc({ ip });
+
+    await client.query(
+      `
+      INSERT INTO rate_limits (ip_address, tokens, last_refill)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (ip_address)
+      DO UPDATE SET tokens = $2, last_refill = $3
+      `,
+      [ip, tokens, lastRefill]
+    );
+  });
 }
 
 // Very light "auth" stub to mirror OIDC/JWT gate; accepts Bearer but doesn't verify in MOCK.

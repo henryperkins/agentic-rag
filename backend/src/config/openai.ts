@@ -107,14 +107,21 @@ async function mockWebSearch(
   const seed = Number(strSeed(query)) || 1;
   const rng = seededRand(seed);
 
+  if (query.includes("fail")) {
+    return { results: [], metadata: { searchQuery: query } };
+  }
+
   const results = Array.from({ length: count }, (_, idx) => {
     const variant = Math.round(rng() * 1000);
+    const snippet = `Synthetic snippet ${idx + 1} providing context for ${query}.`;
     return {
       title: `Mock result ${idx + 1} for "${query}"`,
       url: `https://example.com/mock/${variant}`,
-      snippet: `Synthetic snippet ${idx + 1} providing context for ${query}.`,
+      snippet,
       publishedAt: new Date(2024, 0, (idx + 1) * 3).toISOString(),
-      relevance: 1 / (idx + 1)
+      relevance: 1 / (idx + 1),
+      citationStart: snippet.indexOf("context"),
+      citationEnd: snippet.indexOf("context") + "context".length,
     };
   });
 

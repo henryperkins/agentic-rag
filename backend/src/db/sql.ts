@@ -35,13 +35,28 @@ export async function insertChunk(
   );
 }
 
-export async function listDocuments() {
+export async function listDocuments(limit: number, offset: number) {
   return await withSpan("db.listDocuments", async () => {
     const { rows } = await query(
-      "SELECT id, title, source, created_at FROM documents ORDER BY created_at DESC"
+      "SELECT id, title, source, created_at FROM documents ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+      [limit, offset]
     );
     return rows;
   });
+}
+
+export async function getDocumentById(id: string) {
+  return await withSpan(
+    "db.getDocumentById",
+    async () => {
+      const { rows } = await query(
+        "SELECT id, title, source, created_at FROM documents WHERE id = $1 LIMIT 1",
+        [id]
+      );
+      return rows[0] as { id: string; title: string | null; source: string | null; created_at: string } | undefined;
+    },
+    { id }
+  );
 }
 
 export async function deleteDocument(id: string) {

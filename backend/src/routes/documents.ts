@@ -2,9 +2,10 @@
 import { FastifyInstance } from "fastify";
 import { ingestDocument } from "../services/documents";
 import { ingestGitHubRepo } from "../services/github";
-import { listDocuments, deleteDocument, getChunksForDocument } from "../db/sql";
+import { listDocuments, getDocumentById, deleteDocument, getChunksForDocument } from "../db/sql";
 import { deleteDocumentQdrant } from "../db/qdrant";
 import { USE_DUAL_VECTOR_STORE } from "../config/constants";
+import { query } from "../db/client";
 import type {
   BatchUploadResult,
   GitHubIngestRequest,
@@ -90,16 +91,27 @@ export async function documentRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/api/documents", async (_req, reply) => {
-    const docs = await listDocuments();
-    reply.send({ documents: docs });
+  app.get("/api/documents", async (req, reply) => {
+    const q = (req.query || {}) as any;
+    const limitRaw = q.limit ?? 10;
+    const offsetRaw = q.offset ?? 0;
+
+    const limit = Math.max(1, Math.min(100, Number(limitRaw)));
+    const offset = Math.max(0, Number(offsetRaw));
+
+    const docs = await listDocuments(limit, offset);
+    const totalResult = await query<{ count: string }>("SELECT COUNT(*) as count FROM documents");
+
+    reply.send({
+      items: docs,
+      total: parseInt(totalResult.rows[0].count, 10),
+    });
   });
 
   app.get("/api/documents/:id/full", async (req, reply) => {
     const id = (req.params as any).id as string;
-    const documents = await listDocuments();
-    const document = documents.find((d: any) => d.id === id);
 
+    const document = await getDocumentById(id);
     if (!document) {
       reply.code(404).send({ error: "Document not found" });
       return;

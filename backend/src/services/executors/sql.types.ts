@@ -36,6 +36,7 @@ export interface SqlPlan {
   filters: SqlFilter[];
   sort?: SqlSort[];
   limit?: number;
+  confidence?: number;
   joinHints?: SqlJoinHint[];
 }
 
@@ -64,6 +65,7 @@ export interface Catalog {
 export interface CompiledSQL {
   sql: string;
   params: unknown[];
+  estimatedCost?: number;
 }
 
 export interface SqlAgentRequest {

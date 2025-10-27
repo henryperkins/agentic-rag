@@ -28,6 +28,7 @@ export const MOCK_OPENAI = !!env.MOCK_OPENAI;
 export const ENABLE_SQL_AGENT = env.ENABLE_SQL_AGENT;
 export const SQL_AGENT_MAX_ROWS = env.SQL_AGENT_MAX_ROWS;
 export const SQL_AGENT_TIMEOUT_MS = env.SQL_AGENT_TIMEOUT_MS;
+export const SQL_AGENT_MAX_COST = env.SQL_AGENT_MAX_COST;
 export const SQL_AGENT_ALLOWLIST = env.SQL_AGENT_ALLOWLIST.split(",")
   .map((t: string) => t.trim())
   .filter((t: string) => Boolean(t));
@@ -55,6 +56,8 @@ export const WEB_SEARCH_ALLOWED_DOMAINS = env.WEB_SEARCH_ALLOWED_DOMAINS
   .split(",")
   .map((d: string) => d.trim())
   .filter((d: string) => Boolean(d));
+export const WEB_SEARCH_CONCURRENT_REQUESTS = env.WEB_SEARCH_CONCURRENT_REQUESTS;
+export const WEB_SEARCH_FAILURE_THROTTLE_MS = env.WEB_SEARCH_FAILURE_THROTTLE_MS;
 
 export const USE_LLM_CLASSIFIER = env.USE_LLM_CLASSIFIER;
 

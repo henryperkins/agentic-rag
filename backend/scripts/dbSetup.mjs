@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS feedback (
   question TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  ip_address TEXT PRIMARY KEY,
+  tokens INTEGER NOT NULL,
+  last_refill TIMESTAMPTZ NOT NULL
+);
 `;
 
 const idx = `

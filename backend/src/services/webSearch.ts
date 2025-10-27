@@ -10,6 +10,8 @@ import {
   WEB_SEARCH_LOCATION,
   WEB_SEARCH_ALLOWED_DOMAINS
 } from "../config/constants";
+import { webSearchCache, normalize } from "./cache";
+import { webSearchRequestsCounter, webSearchErrorsCounter, webSearchCacheHitsCounter } from "../config/metrics";
 
 export interface WebSearchChunk extends WebSearchResult {
   score: number;
@@ -25,6 +27,7 @@ export async function performWebSearch(
   maxResults = 5,
   allowedDomains?: string[]
 ): Promise<WebSearchResponse> {
+  webSearchRequestsCounter.inc();
   if (!ENABLE_WEB_SEARCH) {
     return { chunks: [], metadata: {} };
   }
@@ -34,20 +37,34 @@ export async function performWebSearch(
     return { chunks: [], metadata: {} };
   }
 
-  const { results, metadata } = await openaiClient.webSearch(trimmed, {
-    maxResults,
-    contextSize: WEB_SEARCH_CONTEXT_SIZE,
-    location: WEB_SEARCH_LOCATION ?? undefined,
-    allowedDomains: allowedDomains || (WEB_SEARCH_ALLOWED_DOMAINS.length > 0 ? WEB_SEARCH_ALLOWED_DOMAINS : undefined)
-  });
+  const cacheKey = normalize(`websearch:${trimmed}:${allowedDomains?.join(",")}`);
+  const cached = webSearchCache.get(cacheKey);
+  if (cached) {
+    webSearchCacheHitsCounter.inc();
+    return cached;
+  }
 
-  // Convert results to chunks, preserving relevance scores
-  const chunks = results.map((r) => ({
-    ...r,
-    score: r.relevance || 1 / (results.indexOf(r) + 1)
-  }));
+  try {
+    const { results, metadata } = await openaiClient.webSearch(trimmed, {
+      maxResults,
+      contextSize: WEB_SEARCH_CONTEXT_SIZE,
+      location: WEB_SEARCH_LOCATION ?? undefined,
+      allowedDomains: allowedDomains || (WEB_SEARCH_ALLOWED_DOMAINS.length > 0 ? WEB_SEARCH_ALLOWED_DOMAINS : undefined)
+    });
 
-  return { chunks, metadata };
+    // Convert results to chunks, preserving relevance scores
+    const chunks = results.map((r) => ({
+      ...r,
+      score: r.relevance || 1 / (results.indexOf(r) + 1)
+    }));
+
+    const response = { chunks, metadata };
+    webSearchCache.set(cacheKey, response);
+    return response;
+  } catch (error) {
+    webSearchErrorsCounter.inc();
+    throw error;
+  }
 }
 
 export async function performWebSearchStream(

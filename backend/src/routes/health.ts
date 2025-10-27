@@ -1,8 +1,10 @@
 // Sync Health Check Routes
 import { FastifyInstance } from "fastify";
 import { query } from "../db/client";
-import { getQdrantStats } from "../db/qdrant";
-import { USE_DUAL_VECTOR_STORE } from "../config/constants";
+import { getQdrantStats, qdrantClient } from "../db/qdrant";
+import { USE_DUAL_VECTOR_STORE, EMBEDDING_DIMENSIONS, QDRANT_COLLECTION } from "../config/constants";
+import { getMetrics, getContentType } from "../config/metrics";
+import { reconcileStores } from "../jobs/dualStoreReconciler";
 
 export async function healthRoutes(app: FastifyInstance) {
   /**
@@ -117,6 +119,49 @@ export async function healthRoutes(app: FastifyInstance) {
       reply.code(500).send({
         error: "Reconciliation failed",
         message: (error as Error).message,
+      });
+    }
+  });
+
+  app.post("/api/health/reconcile/run", async (_req, reply) => {
+    try {
+      const result = await reconcileStores();
+      reply.send({
+        message: "Reconciliation job completed successfully",
+        ...result,
+      });
+    } catch (error) {
+      reply.code(500).send({
+        error: "Reconciliation job failed",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  app.get("/metrics", async (_req, reply) => {
+    try {
+      reply.header("Content-Type", getContentType());
+      reply.send(await getMetrics());
+    } catch (error) {
+      reply.code(500).send({
+        error: "Failed to retrieve metrics",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  app.get("/api/health/qdrant", async (_req, reply) => {
+    try {
+      // Perform a lightweight search to check Qdrant's health
+      await qdrantClient.search(QDRANT_COLLECTION, {
+        vector: new Array(EMBEDDING_DIMENSIONS).fill(0),
+        limit: 1,
+      });
+      reply.send({ status: "ok" });
+    } catch (error) {
+      reply.code(503).send({
+        status: "unavailable",
+        error: (error as Error).message,
       });
     }
   });

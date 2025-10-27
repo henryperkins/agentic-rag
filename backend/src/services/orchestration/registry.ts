@@ -146,6 +146,13 @@ export const Agents = {
     }
   },
   quality: {
-    verifyAnswer
+    verifyAnswer,
+    async rewriteQuery(query: string): Promise<string> {
+      const content = await openaiClient.chat([
+        { role: "system", content: "You are a query rewriting expert. Rewrite the user's query to be more specific and clear for a retrieval system. Return only the rewritten query." },
+        { role: "user", content: query }
+      ]);
+      return content;
+    }
   }
 };

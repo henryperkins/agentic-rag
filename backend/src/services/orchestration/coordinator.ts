@@ -8,10 +8,16 @@ import {
   MAX_VERIFICATION_LOOPS,
   ALLOW_LOW_GRADE_FALLBACK,
   CACHE_FAILURES,
-  ENABLE_QUERY_REWRITING
+  ENABLE_QUERY_REWRITING,
+  WEB_SEARCH_CONCURRENT_REQUESTS,
+  WEB_SEARCH_FAILURE_THROTTLE_MS
 } from "../../config/constants";
 import { maybeRewriteQuery, persistRewrite } from "../query";
 import type { RetrievedChunk } from "../retrieval";
+import { Semaphore } from "async-mutex";
+
+const webSearchSemaphore = new Semaphore(WEB_SEARCH_CONCURRENT_REQUESTS);
+const webSearchFailures = new Map<string, { count: number; lastAttempt: number }>();
 
 type RetrievalPayload = {
   chunks: RetrievedChunk[];
@@ -187,49 +193,66 @@ export async function runCoordinator(
         }
 
         if (allowWeb && (decision.targets.includes("web") || combined.length === 0)) {
-          const webResponse = await withSpan(
-            "retrieve.web",
-            () => Agents.retrieval.webRetrieveWithMetadataStream(
-              working,
-              opts.allowedDomains,
-              (event) => {
-                // Forward web search progress events to frontend
-                switch (event.type) {
-                  case 'web_search.in_progress':
-                    sender({
-                      type: "agent_log",
-                      role: "researcher",
-                      message: "Initiating web search...",
-                      ts: Date.now()
-                    });
-                    break;
-                  case 'web_search.searching':
-                    sender({
-                      type: "agent_log",
-                      role: "researcher",
-                      message: "Searching the web...",
-                      ts: Date.now()
-                    });
-                    break;
-                  case 'web_search.completed':
-                    sender({
-                      type: "agent_log",
-                      role: "researcher",
-                      message: `Web search completed (${event.data?.resultCount || 0} results).`,
-                      ts: Date.now()
-                    });
-                    break;
-                }
+          const failureKey = normalize(`webfailure:${working}`);
+          const failureInfo = webSearchFailures.get(failureKey);
+          if (failureInfo && Date.now() - failureInfo.lastAttempt < WEB_SEARCH_FAILURE_THROTTLE_MS * Math.pow(2, failureInfo.count)) {
+            // Throttled
+          } else {
+            const [, release] = await webSearchSemaphore.acquire();
+            try {
+              const webResponse = await withSpan(
+                "retrieve.web",
+                () => Agents.retrieval.webRetrieveWithMetadataStream(
+                  working,
+                  opts.allowedDomains,
+                  (event) => {
+                    // Forward web search progress events to frontend
+                    switch (event.type) {
+                      case 'web_search.in_progress':
+                        sender({
+                          type: "agent_log",
+                          role: "researcher",
+                          message: "Initiating web search...",
+                          ts: Date.now()
+                        });
+                        break;
+                      case 'web_search.searching':
+                        sender({
+                          type: "agent_log",
+                          role: "researcher",
+                          message: "Searching the web...",
+                          ts: Date.now()
+                        });
+                        break;
+                      case 'web_search.completed':
+                        sender({
+                          type: "agent_log",
+                          role: "researcher",
+                          message: `Web search completed (${event.data?.resultCount || 0} results).`,
+                          ts: Date.now()
+                        });
+                        break;
+                    }
+                  }
+                ),
+                { enabled: true }
+              );
+              // Track web search usage for error messages
+              usedWeb = true;
+              webChunksFound = webResponse.chunks.length;
+              if (webResponse.chunks.length > 0) {
+                combined = combined.concat(webResponse.chunks);
+                webMetadata = webResponse.metadata;
+                webSearchFailures.delete(failureKey);
+              } else {
+                const info = webSearchFailures.get(failureKey) || { count: 0, lastAttempt: 0 };
+                info.count++;
+                info.lastAttempt = Date.now();
+                webSearchFailures.set(failureKey, info);
               }
-            ),
-            { enabled: true }
-          );
-          // Track web search usage for error messages
-          usedWeb = true;
-          webChunksFound = webResponse.chunks.length;
-          if (webResponse.chunks.length > 0) {
-            combined = combined.concat(webResponse.chunks);
-            webMetadata = webResponse.metadata;
+            } finally {
+              release();
+            }
           }
         }
 
@@ -468,7 +491,11 @@ export async function runCoordinator(
         sender({ type: "final", text: answer, citations, rewrittenQuery: working !== message ? working : undefined, verified: verify.isValid, ts: Date.now() });
       } else {
         sender({ type: "agent_log", role: "planner", message: "Verification failed — refining and retrying…", ts: Date.now() });
-        working = `${message} (focus: disambiguate terms)`;
+        if (verify.confidence < 0.5) {
+          working = await Agents.quality.rewriteQuery(working);
+        } else {
+          working = `${message} (focus: disambiguate terms)`;
+        }
       }
     }, { loops });
 

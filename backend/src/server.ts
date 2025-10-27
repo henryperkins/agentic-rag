@@ -11,12 +11,17 @@ import { healthRoutes } from "./routes/health";
 import { onRequestRateLimit, preHandlerAuth } from "./middleware/security";
 import { initQdrantCollection } from "./db/qdrant";
 import { USE_DUAL_VECTOR_STORE, QDRANT_URL, QDRANT_API_KEY } from "./config/constants";
+import { reconcileStores } from "./jobs/dualStoreReconciler";
+import { qdrantClient } from "./db/qdrant";
+import { v4 as uuidv4 } from "uuid";
+
+let reconciliationInterval: NodeJS.Timeout | null = null;
 
 /**
  * Validate Qdrant Cloud configuration at startup
  * Prevents runtime failures due to missing credentials
  */
-function validateQdrantConfig() {
+async function validateQdrantConfig() {
   if (!USE_DUAL_VECTOR_STORE) {
     return; // Dual-store disabled, skip validation
   }
@@ -33,6 +38,20 @@ function validateQdrantConfig() {
     process.exit(1);
   }
 
+  try {
+    // Canary write/read to ensure Qdrant is fully operational
+    const canaryId = uuidv4();
+    await qdrantClient.upsert("canary", {
+      wait: true,
+      points: [{ id: canaryId, vector: [0.5, 0.5, 0.5, 0.5] }],
+    });
+    await qdrantClient.delete("canary", { wait: true, points: [canaryId] });
+    console.log("✓ Qdrant connection validated with canary write/read.");
+  } catch (error) {
+    console.error("❌ FATAL: Qdrant canary write/read failed:", error);
+    process.exit(1);
+  }
+
   if (isCloudUrl) {
     console.log(`✓ Qdrant Cloud configuration validated: ${QDRANT_URL}`);
   } else {
@@ -44,7 +63,7 @@ export async function build() {
   const app = Fastify({ logger: true });
 
   // Validate Qdrant configuration before initialization
-  validateQdrantConfig();
+  await validateQdrantConfig();
 
   // Initialize Qdrant collection if dual-store is enabled
   if (USE_DUAL_VECTOR_STORE) {
@@ -76,7 +95,22 @@ async function start() {
   const app = await build();
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
   app.log.info(`Backend listening on http://localhost:${env.PORT}`);
+
+  // Start scheduled reconciliation job
+  if (USE_DUAL_VECTOR_STORE) {
+    reconciliationInterval = setInterval(reconcileStores, 60 * 60 * 1000); // Every hour
+  }
 }
+
+function shutdown() {
+  if (reconciliationInterval) {
+    clearInterval(reconciliationInterval);
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 // Start server if run directly (not imported)
 if (import.meta.url === `file://${process.argv[1]}`) {

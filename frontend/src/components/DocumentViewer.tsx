@@ -3,12 +3,13 @@ import type { DocumentWithChunks } from "../../../shared/types";
 
 const MAX_OVERLAP_CANDIDATE = 500;
 
-function stitchChunks(chunks: DocumentWithChunks["chunks"]): string {
-  if (!chunks.length) return "";
+function stitchChunks(chunks: DocumentWithChunks["chunks"]): { content: string; isIncomplete: boolean } {
+  if (!chunks.length) return { content: "", isIncomplete: false };
 
   const ordered = [...chunks].sort((a, b) => a.chunk_index - b.chunk_index);
+  let isIncomplete = false;
 
-  return ordered.reduce((acc, chunk, index) => {
+  const content = ordered.reduce((acc, chunk, index) => {
     if (index === 0) {
       return chunk.content;
     }
@@ -23,8 +24,15 @@ function stitchChunks(chunks: DocumentWithChunks["chunks"]): string {
       }
     }
 
+    if (overlap === 0) {
+      isIncomplete = true;
+      return acc + "\n\n... [Content Missing] ...\n\n" + chunk.content;
+    }
+
     return acc + chunk.content.slice(overlap);
   }, "");
+
+  return { content, isIncomplete };
 }
 
 interface DocumentViewerProps {
@@ -36,14 +44,16 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
   const [document, setDocument] = useState<DocumentWithChunks | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showFull, setShowFull] = useState(false);
 
   useEffect(() => {
     async function fetchDocument() {
       setLoading(true);
-      setError(null); // Clear any previous errors
-      setDocument(null); // Clear previous document to prevent stale content
+      setError(null);
+      setDocument(null);
       try {
-        const response = await fetch(`/api/documents/${documentId}/full`);
+        const url = showFull ? `/api/documents/${documentId}/full` : `/api/documents/${documentId}`;
+        const response = await fetch(url);
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -57,10 +67,10 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
     }
 
     fetchDocument();
-  }, [documentId]);
+  }, [documentId, showFull]);
 
-  const stitchedContent = useMemo(() => {
-    if (!document) return "";
+  const { content: stitchedContent, isIncomplete } = useMemo(() => {
+    if (!document) return { content: "", isIncomplete: false };
     return stitchChunks(document.chunks);
   }, [document]);
 
@@ -71,6 +81,9 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
           <h3>{document?.title || "Document"}</h3>
           {document?.source && <span className="doc-meta">Source: {document.source}</span>}
         </div>
+        <button onClick={() => setShowFull(!showFull)} className="toggle-btn">
+          {showFull ? "Show Stitched" : "Show Full"}
+        </button>
         <button onClick={onClose} className="close-btn">
           Close
         </button>
@@ -79,6 +92,11 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
       {error && <div className="error-message">Error: {error}</div>}
       {document && (
         <div className="content-container markdown-content">
+          {isIncomplete && !showFull && (
+            <div className="incomplete-warning">
+              This document may be incomplete. <button onClick={() => setShowFull(true)}>Fetch full document</button>.
+            </div>
+          )}
           <pre>{stitchedContent}</pre>
         </div>
       )}

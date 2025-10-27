@@ -5,7 +5,8 @@ import {
   SQL_AGENT_ALLOWLIST,
   SQL_AGENT_ALLOWED_FUNCS,
   SQL_AGENT_MAX_ROWS,
-  SQL_AGENT_TIMEOUT_MS
+  SQL_AGENT_TIMEOUT_MS,
+  SQL_AGENT_MAX_COST
 } from "../../config/constants";
 import { env } from "../../config/env";
 import { randomUUID } from "crypto";
@@ -48,6 +49,10 @@ export async function runSqlAgent(request: SqlAgentRequest): Promise<SqlAgentRes
 
   const compiled = buildSQLFromPlan(plan, catalog);
 
+  if ((compiled.estimatedCost ?? 0) > SQL_AGENT_MAX_COST) {
+    throw new Error(`Query cost estimate (${compiled.estimatedCost}) exceeds maximum (${SQL_AGENT_MAX_COST})`);
+  }
+
   const client = await pool.connect();
   const timeout = setTimeout(() => {
     try {
@@ -57,6 +62,7 @@ export async function runSqlAgent(request: SqlAgentRequest): Promise<SqlAgentRes
     }
   }, SQL_AGENT_TIMEOUT_MS);
   try {
+    await client.query(`SET statement_timeout = ${SQL_AGENT_TIMEOUT_MS}`);
     const cappedSql = `${compiled.sql}\nLIMIT ${Math.min(SQL_AGENT_MAX_ROWS, plan.limit ?? SQL_AGENT_MAX_ROWS)}`;
     const res = await client.query(cappedSql, compiled.params || []);
     clearTimeout(timeout);

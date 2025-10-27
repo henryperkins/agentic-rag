@@ -56,6 +56,15 @@ export async function chatRoutes(app: FastifyInstance) {
       sseWrite(reply, e);
     };
 
+    // Heartbeat to close zombie connections
+    const heartbeat = setInterval(() => {
+      if (reply.raw.socket?.destroyed) {
+        clearInterval(heartbeat);
+        clearInterval(keepAlive);
+        aborted = true;
+      }
+    }, 30000);
+
     try {
       await runCoordinator(message, sender, { useRag, useHybrid, useWeb, allowedDomains });
     } catch (err: any) {
@@ -65,6 +74,7 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     } finally {
       clearInterval(keepAlive);
+      clearInterval(heartbeat);
       if (!aborted) {
         try { reply.raw.end(); } catch {}
       }

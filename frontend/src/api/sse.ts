@@ -28,13 +28,14 @@ export function startChatSSE(body: ChatRequestBody, onEvent: (e: AnyEvent) => vo
 class EventSourcePolyfill {
   private controller: AbortController;
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  private reconnectAttempts = 0;
 
   constructor(private url: string, private options: { body: string }) {
     this.controller = new AbortController();
   }
 
   subscribe(onEvent: (e: AnyEvent) => void) {
-    (async () => {
+    const connect = async () => {
       try {
         const res = await fetch(this.url, {
           method: "POST",
@@ -45,12 +46,7 @@ class EventSourcePolyfill {
           credentials: "include"
         });
         if (!res.ok) {
-          const now = Date.now();
-          let msg = "";
-          try { msg = await res.text(); } catch {}
-          onEvent({ type: "tokens", text: `Request failed (${res.status}): ${msg || res.statusText}`, ts: now } as any);
-          onEvent({ type: "final", text: `Request failed (${res.status}).`, citations: [], verified: false, ts: now } as any);
-          return;
+          throw new Error(`Request failed (${res.status})`);
         }
         if (!res.body) return;
         this.reader = res.body.getReader();
@@ -78,6 +74,7 @@ class EventSourcePolyfill {
               try {
                 const obj = JSON.parse(data);
                 (obj.type = eventType), onEvent(obj as AnyEvent);
+                this.reconnectAttempts = 0; // Reset on successful event
               } catch {
                 // ignore
               }
@@ -85,15 +82,14 @@ class EventSourcePolyfill {
           }
         }
       } catch (err: any) {
-        const now = Date.now();
-        try {
-          onEvent({ type: "tokens", text: `Connection error: ${err?.message || "unknown"}`, ts: now } as any);
-          onEvent({ type: "final", text: "Connection closed unexpectedly.", citations: [], verified: false, ts: now } as any);
-        } catch {
-          // ignore
-        }
+        if (this.controller.signal.aborted) return;
+        const delay = Math.pow(2, this.reconnectAttempts) * 1000;
+        setTimeout(connect, delay);
+        this.reconnectAttempts++;
       }
-    })();
+    };
+
+    connect();
 
     return {
       close: () => this.controller.abort()

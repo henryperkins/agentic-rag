@@ -33,6 +33,7 @@ export const env = {
   ENABLE_SQL_AGENT: process.env.ENABLE_SQL_AGENT === "true",
   SQL_AGENT_MAX_ROWS: Number(process.env.SQL_AGENT_MAX_ROWS || 50),
   SQL_AGENT_TIMEOUT_MS: Number(process.env.SQL_AGENT_TIMEOUT_MS || 400),
+  SQL_AGENT_MAX_COST: Number(process.env.SQL_AGENT_MAX_COST || 1000),
   SQL_AGENT_ALLOWLIST:
     process.env.SQL_AGENT_ALLOWLIST || "documents,chunks,query_rewrites",
   SQL_AGENT_MAX_JOIN_DEPTH: Number(process.env.SQL_AGENT_MAX_JOIN_DEPTH || 2),
@@ -48,6 +49,8 @@ export const env = {
   WEB_SEARCH_TIMEZONE: process.env.WEB_SEARCH_TIMEZONE || "",
   WEB_SEARCH_CONTEXT_SIZE:
     (process.env.WEB_SEARCH_CONTEXT_SIZE as "low" | "medium" | "high") || "medium",
+  WEB_SEARCH_CONCURRENT_REQUESTS: Number(process.env.WEB_SEARCH_CONCURRENT_REQUESTS || 3),
+  WEB_SEARCH_FAILURE_THROTTLE_MS: Number(process.env.WEB_SEARCH_FAILURE_THROTTLE_MS || 5000),
   WEB_SEARCH_ALLOWED_DOMAINS: process.env.WEB_SEARCH_ALLOWED_DOMAINS || "",
 
   USE_LLM_CLASSIFIER: process.env.USE_LLM_CLASSIFIER === "true",

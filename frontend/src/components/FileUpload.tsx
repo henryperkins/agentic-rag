@@ -19,16 +19,20 @@ export function FileUpload() {
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
 
-  async function refresh() {
-    const res = await fetch("/api/documents");
+  async function refresh(page = currentPage, size = pageSize) {
+    const limit = size;
+    const offset = (page - 1) * size;
+    const res = await fetch(`/api/documents?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`);
     const json = await res.json();
-    setDocs(json.documents || []);
+    setDocs(json.items || []);
+    setTotal(Number(json.total) || 0);
   }
 
   useEffect(() => {
-    refresh();
-  }, []);
+    refresh(currentPage, pageSize);
+  }, [currentPage, pageSize]);
 
   // Handle single or bulk file upload
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -156,10 +160,8 @@ export function FileUpload() {
   }
 
   // Pagination calculations
-  const totalPages = Math.ceil(docs.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
-  const endIndex = startIndex + pageSize;
-  const paginatedDocs = docs.slice(startIndex, endIndex);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const paginatedDocs = docs;
 
   const goToPage = (page: number) => {
     setCurrentPage(Math.max(1, Math.min(page, totalPages)));
@@ -273,7 +275,7 @@ export function FileUpload() {
       {/* Documents List */}
       <div className="stack">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-          <h3>Uploaded Documents ({docs.length})</h3>
+          <h3>Uploaded Documents ({total})</h3>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <label htmlFor="page-size" style={{ fontSize: "0.9rem" }}>Show:</label>
             <select
