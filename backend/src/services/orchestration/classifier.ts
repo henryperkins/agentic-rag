@@ -1,4 +1,7 @@
 // Layer 2: Orchestration - Query Classifier
+import { openaiClient } from "../../config/openai";
+import { USE_LLM_CLASSIFIER } from "../../config/constants";
+
 export type RetrievalTarget = "vector" | "sql" | "web";
 
 export type RouteDecision = {
@@ -7,7 +10,10 @@ export type RouteDecision = {
   targets: RetrievalTarget[];
 };
 
-export function classifyQuery(q: string): RouteDecision {
+/**
+ * Heuristic-based query classification (fast, no API cost)
+ */
+export function classifyQueryHeuristic(q: string): RouteDecision {
   const len = q.split(/\s+/).length;
   const hasOps = /join|aggregate|compare|timeline|pipeline|why|how/i.test(q);
   const sqlIndicators = /\b(select|from|table|column|join|where|group by|order by|count|sum|avg|max|min)\b/i.test(
@@ -23,4 +29,71 @@ export function classifyQuery(q: string): RouteDecision {
   if (recencyIndicators) targets.push("web");
   const uniqueTargets = Array.from(new Set(targets));
   return { mode, complexity, targets: uniqueTargets };
+}
+
+/**
+ * LLM-based query classification (intelligent, uses API)
+ */
+async function classifyQueryLLM(q: string): Promise<RouteDecision> {
+  const prompt = `You are a query router for a RAG system. Analyze this user query and determine:
+1. MODE: Should we retrieve documents ("retrieve") or answer directly ("direct")?
+   - Use "retrieve" for questions requiring factual lookup, technical details, or domain knowledge
+   - Use "direct" for greetings, simple calculations, or general knowledge
+
+2. COMPLEXITY: Rate as "low", "medium", or "high"
+   - "low": Simple factual questions (who, what, when)
+   - "medium": Questions requiring synthesis or comparison
+   - "high": Multi-step reasoning, aggregation, or complex analysis
+
+3. TARGETS: Which retrieval sources to use (array of: "vector", "sql", "web")
+   - "vector": Use for semantic search in document corpus
+   - "sql": Use if query asks for structured data, counts, aggregations, or database operations
+   - "web": Use if query asks for recent events, news, current information, or real-time data
+
+Query: "${q}"
+
+Respond with ONLY valid JSON in this exact format:
+{
+  "mode": "retrieve",
+  "complexity": "medium",
+  "targets": ["vector", "web"]
+}`;
+
+  const response = await openaiClient.chat([
+    { role: "system", content: "You are a precise query classifier. Respond only with valid JSON." },
+    { role: "user", content: prompt }
+  ]);
+
+  // Parse JSON response
+  const cleaned = response.trim().replace(/^```json\n?/, "").replace(/\n?```$/, "");
+  const parsed = JSON.parse(cleaned);
+
+  // Validate and normalize
+  const mode = ["retrieve", "direct"].includes(parsed.mode) ? parsed.mode : "retrieve";
+  const complexity = ["low", "medium", "high"].includes(parsed.complexity) ? parsed.complexity : "medium";
+  const targets = Array.isArray(parsed.targets)
+    ? parsed.targets.filter((t: string) => ["vector", "sql", "web"].includes(t))
+    : ["vector"];
+
+  return {
+    mode,
+    complexity,
+    targets: Array.from(new Set(targets)) as RetrievalTarget[]
+  };
+}
+
+/**
+ * Main classifier with LLM support and fallback to heuristics
+ */
+export async function classifyQuery(q: string): Promise<RouteDecision> {
+  if (!USE_LLM_CLASSIFIER) {
+    return classifyQueryHeuristic(q);
+  }
+
+  try {
+    return await classifyQueryLLM(q);
+  } catch (error) {
+    console.warn("LLM classifier failed, falling back to heuristics:", error);
+    return classifyQueryHeuristic(q);
+  }
 }

@@ -111,7 +111,10 @@ SSE Stream Events (agent_log, citations, tokens, verification, final)
 Located in `backend/src/services/orchestration/`:
 
 - **coordinator.ts**: Master orchestrator managing the retrieval → verify → refine loop with bounded retries
-- **classifier.ts**: Heuristic-based query router (no LLM cost) deciding "retrieve" vs "direct" mode
+- **classifier.ts**: Query router with dual modes:
+  - **Heuristic mode** (default): Fast, keyword-based routing (no LLM cost)
+  - **LLM mode** (optional): Intelligent routing using GPT-4o-mini with structured output
+  - Auto-fallback to heuristics on LLM failure
 - **registry.ts**: Service locator pattern binding agents (retrieval, processing, quality)
 
 **Key Pattern**: Agents are lightweight functional modules, not classes. The coordinator invokes them sequentially and manages state.
@@ -211,6 +214,9 @@ CHUNK_OVERLAP=100              # Sliding window overlap
 MAX_AGENT_STEPS=3              # Max agent iterations
 MAX_VERIFICATION_LOOPS=2       # Max verify→refine loops
 
+# Classifier
+USE_LLM_CLASSIFIER=true|false  # Enable LLM-based query routing (fallback to heuristics)
+
 # Testing
 MOCK_OPENAI=0|1                # Use deterministic mock embeddings
 ```
@@ -290,6 +296,39 @@ Results are deduplicated by chunk ID (keeping max score), then reranked using ei
 - Qdrant BGE reranker (if available)
 - Jaccard token overlap fallback (70% overlap + 30% pre-score)
 
+### Query Classification (LLM + Heuristic)
+
+The system supports two classification strategies for intelligent query routing:
+
+**Heuristic Classifier** (default, `USE_LLM_CLASSIFIER=false`):
+- Fast, zero-cost keyword-based analysis
+- Rules:
+  - **Mode detection**: Query length + operator keywords (`join`, `compare`, `why`, `how`, etc.)
+  - **SQL detection**: Keywords like `SELECT`, `COUNT`, `WHERE`, `GROUP BY`
+  - **Web detection**: Recency indicators (`latest`, `today`, `2024`, `2025`, `current`, `news`)
+  - **Complexity scoring**: Word count + operator presence
+- Trade-off: May misclassify edge cases or domain-specific jargon
+
+**LLM Classifier** (optional, `USE_LLM_CLASSIFIER=true`):
+- Intelligent routing using GPT-4o-mini with structured JSON output
+- Advantages:
+  - Context-aware classification (understands intent beyond keywords)
+  - Adaptive to natural language variations
+  - Better handling of complex or ambiguous queries
+- Automatic fallback to heuristics on LLM failure or timeout
+- Cost: ~$0.0001 per classification (negligible for most workloads)
+
+**Decision outputs**:
+```typescript
+{
+  mode: "retrieve" | "direct",        // Retrieve docs vs direct answer
+  complexity: "low" | "medium" | "high",
+  targets: ["vector", "sql", "web"]   // Which retrieval sources to use
+}
+```
+
+**Recommendation**: Use heuristic mode for latency-sensitive applications; enable LLM mode for complex domains or when accuracy matters more than speed.
+
 ### Verification Loop
 
 The system implements bounded self-verification to prevent hallucinations:
@@ -347,6 +386,10 @@ Tests use `MOCK_OPENAI=1` for deterministic embeddings and responses:
 - **reranker.test.ts**: Fallback reranker ordering
 - **agent.test.ts**: Direct mode completion within MAX_AGENT_STEPS
 - **verifier.test.ts**: Grade shape and verifyAnswer behavior
+- **classifier.test.ts**: Heuristic and LLM-based query classification
+- **webSearch.test.ts**: Web search results and scoring
+- **webOnlyMode.test.ts**: Web-only retrieval mode
+- **dualStore*.test.ts**: Dual vector store sync and health checks
 
 Run with `npm test` at root or `npm -w backend run test` for watch mode.
 

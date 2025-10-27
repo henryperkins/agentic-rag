@@ -61,7 +61,7 @@ export async function runCoordinator(
   sender: (e: SSEOutEvent) => void,
   opts: { useRag: boolean; useHybrid: boolean; useWeb: boolean }
 ) {
-  const decision = classifyQuery(message);
+  const decision = await classifyQuery(message);
   sender({
     type: "agent_log",
     role: "planner",
