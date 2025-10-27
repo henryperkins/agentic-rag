@@ -47,5 +47,7 @@ export const env = {
   WEB_SEARCH_COUNTRY: process.env.WEB_SEARCH_COUNTRY || "",
   WEB_SEARCH_TIMEZONE: process.env.WEB_SEARCH_TIMEZONE || "",
   WEB_SEARCH_CONTEXT_SIZE:
-    (process.env.WEB_SEARCH_CONTEXT_SIZE as "low" | "medium" | "high") || "medium"
+    (process.env.WEB_SEARCH_CONTEXT_SIZE as "low" | "medium" | "high") || "medium",
+
+  USE_LLM_CLASSIFIER: process.env.USE_LLM_CLASSIFIER === "true"
 };

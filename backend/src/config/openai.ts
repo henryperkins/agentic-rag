@@ -96,11 +96,30 @@ async function realChat(messages: Message[]): Promise<string> {
     const { OpenAI } = await import("openai");
     realOpenAI = new OpenAI();
   }
-  const res = await realOpenAI.chat.completions.create({
+  const response = await realOpenAI.responses.create({
     model: "gpt-4o-mini",
-    messages
+    input: messages.map((message) => ({
+      role: message.role,
+      content: [{ type: "text", text: message.content }]
+    }))
   });
-  return res.choices[0]?.message?.content || "";
+
+  const outputText = response.output_text?.trim();
+  if (outputText) {
+    return outputText;
+  }
+
+  for (const item of response.output || []) {
+    if (item.type === "message") {
+      for (const part of item.content) {
+        if (part.type === "output_text" && part.text) {
+          return part.text.trim();
+        }
+      }
+    }
+  }
+
+  return "";
 }
 
 async function realWebSearch(query: string, options: WebSearchOptions): Promise<WebSearchResult[]> {
@@ -140,36 +159,38 @@ async function realWebSearch(query: string, options: WebSearchOptions): Promise<
     ],
     tool_choice: { type: "web_search_preview" as const },
     temperature: 0.2,
-    response_format: {
-      type: "json_schema",
-      name: "web_search_results",
-      strict: true,
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          summary: {
-            type: "string",
-            description: "Optional short summary of the findings."
-          },
-          results: {
-            type: "array",
-            minItems: 0,
-            maxItems: maxResults,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                title: { type: "string" },
-                url: { type: "string" },
-                snippet: { type: "string" },
-                publishedAt: { type: "string" }
-              },
-              required: ["title", "url", "snippet"]
+    text: {
+      format: {
+        type: "json_schema",
+        name: "web_search_results",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            summary: {
+              type: "string",
+              description: "Optional short summary of the findings."
+            },
+            results: {
+              type: "array",
+              minItems: 0,
+              maxItems: maxResults,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  title: { type: "string" },
+                  url: { type: "string" },
+                  snippet: { type: "string" },
+                  publishedAt: { anyOf: [{ type: "string" }, { type: "null" }] }
+                },
+                required: ["title", "url", "snippet", "publishedAt"]
+              }
             }
-          }
-        },
-        required: ["results"]
+          },
+          required: ["results"]
+        }
       }
     }
   });

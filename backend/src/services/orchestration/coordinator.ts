@@ -6,6 +6,55 @@ import { withSpan, addEvent } from "../../config/otel";
 import { normalize, responseCache, retrievalCache } from "../cache";
 import { MAX_VERIFICATION_LOOPS } from "../../config/constants";
 
+/**
+ * Cleans chunk content by removing metadata and frontmatter
+ */
+function cleanChunkContent(content: string): string {
+  let cleaned = content;
+
+  // Remove YAML frontmatter (between --- markers)
+  cleaned = cleaned.replace(/^---\s*[\s\S]*?---\s*/m, "");
+
+  // Remove XML-style tags like <page>, <source>, etc.
+  cleaned = cleaned.replace(/<\/?[^>]+>/g, "");
+
+  // Remove common metadata fields
+  cleaned = cleaned.replace(/^(title|description|author|published|created|lastUpdated|chatbotDeprioritize|source_url|html|md):\s*.*$/gm, "");
+
+  // Remove multiple consecutive blank lines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+
+  return cleaned.trim();
+}
+
+/**
+ * Smart truncate that avoids breaking markdown syntax
+ */
+function smartTruncate(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+
+  // Try to truncate at a sentence boundary
+  const truncated = text.slice(0, maxLength);
+  const lastPeriod = truncated.lastIndexOf(". ");
+  const lastNewline = truncated.lastIndexOf("\n");
+
+  // Find the best break point
+  const breakPoint = Math.max(lastPeriod, lastNewline);
+
+  if (breakPoint > maxLength * 0.7) {
+    // Use sentence/paragraph break if it's not too early
+    return text.slice(0, breakPoint + 1).trim() + "...";
+  }
+
+  // Otherwise just truncate but try to avoid breaking inline code
+  const safePoint = truncated.lastIndexOf(" ");
+  if (safePoint > maxLength * 0.8) {
+    return text.slice(0, safePoint).trim() + "...";
+  }
+
+  return truncated.trim() + "...";
+}
+
 // Coordinator is a thin orchestration layer mirroring L2 with hooks to L3/L7/L8/L14.
 export async function runCoordinator(
   message: string,
@@ -31,7 +80,8 @@ export async function runCoordinator(
     return;
   }
 
-  if (!opts.useRag || decision.mode === "direct") {
+  // Allow web-only mode (when useWeb=true but useRag=false)
+  if ((!opts.useRag && !opts.useWeb) || decision.mode === "direct") {
     const text = `Direct mode: ${message}`;
     for (const chunk of text.match(/.{1,60}/g) || []) sender({ type: "tokens", text: chunk, ts: Date.now() });
     sender({ type: "final", text, citations: [], verified: false, ts: Date.now() });
@@ -46,7 +96,7 @@ export async function runCoordinator(
   while (loops <= MAX_VERIFICATION_LOOPS) {
     await withSpan("retrieve", async () => {
       const modeLabel = [
-        opts.useHybrid ? "hybrid" : "vector",
+        opts.useRag ? (opts.useHybrid ? "hybrid" : "vector") : null,
         decision.targets.includes("sql") ? "sql" : null,
         allowWeb ? "web" : null
       ]
@@ -64,7 +114,8 @@ export async function runCoordinator(
       let retrieved = canUseCache ? retrievalCache.get(cacheKey) : undefined;
       let usedWeb = false;
       if (!retrieved) {
-        const vectorResults = await Agents.retrieval.hybridRetrieve(working, opts.useHybrid);
+        // Only retrieve from local store if useRag is enabled
+        const vectorResults = opts.useRag ? await Agents.retrieval.hybridRetrieve(working, opts.useHybrid) : [];
         let combined = vectorResults.slice();
 
         if (decision.targets.includes("sql")) {
@@ -131,10 +182,13 @@ export async function runCoordinator(
 
       // Writer (simple extractive compose from approved)
       const parts: string[] = approved.slice(0, 3).map((ev) => {
-        const snip = ev.content.length > 260 ? ev.content.slice(0, 260) + "..." : ev.content;
-        return `${snip.trim()} [cite:${ev.document_id}:${ev.chunk_index}]`;
+        // Clean metadata and frontmatter
+        const cleaned = cleanChunkContent(ev.content);
+        // Smart truncate to avoid breaking markdown (increased limit from 260 to 500)
+        const snip = smartTruncate(cleaned, 500);
+        return `${snip}\n\n*[Source: ${ev.chunk_index + 1}]*`;
       });
-      const answer = `**Answer (from evidence):**\n${parts.join("\n\n")}`;
+      const answer = `**Answer (from evidence):**\n\n${parts.join("\n\n---\n\n")}`;
 
       // Stream
       for (const c of answer.match(/.{1,60}/g) || []) sender({ type: "tokens", text: c, ts: Date.now() });

@@ -35,3 +35,11 @@
 - Copy `backend/.env.example` to `backend/.env`, populate `DATABASE_URL` and API keys, and keep secrets out of version control.
 - Constrain `env.CORS_ORIGIN` to trusted domains and leave rate-limiting/auth hooks active unless intentionally testing failures.
 - Confirm migrations ran successfully before ingesting documents; stale schemas typically surface as retrieval errors.
+
+## Web Search Agent (Layer 7)
+
+**Trigger:** Recency indicators in query or empty local results
+**Source:** OpenAI hosted `web_search_preview` tool
+**Location Awareness:** Optional approximate location (city/region/country/timezone)
+**Normalization:** Extracts domain as `document_id`, creates SHA-1 hash IDs
+**Caching:** Bypassed for freshness (retrieval cache disabled when web active)

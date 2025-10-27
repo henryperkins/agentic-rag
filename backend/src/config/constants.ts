@@ -51,3 +51,5 @@ export const WEB_SEARCH_LOCATION = env.WEB_SEARCH_CITY ||
       timezone: env.WEB_SEARCH_TIMEZONE || undefined
     }
   : null;
+
+export const USE_LLM_CLASSIFIER = env.USE_LLM_CLASSIFIER;

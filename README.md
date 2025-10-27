@@ -98,6 +98,18 @@ WEB_SEARCH_TIMEZONE=
 
 When `ENABLE_WEB_SEARCH=true`, the coordinator augments local retrieval with OpenAI's hosted web search tool. Configure the optional location hints (city/region/country/timezone) to improve geolocated results or leave them blank to skip.
 
+### Web Search Features
+
+When `ENABLE_WEB_SEARCH=true`, queries with recency indicators trigger live web search:
+- **Triggers:** latest, today, current, news, update, recent, year references
+- **Location:** Optional geo-filtering via city/region/country/timezone
+- **Context Size:** Controls result depth (low/medium/high)
+- **Fallback:** Automatically augments when local corpus has no matches
+
+**Examples:**
+- "What's the latest on AI regulation 2025?" → triggers web search
+- "Explain vector databases" → uses local corpus only
+
 ## 📁 Repository Structure
 
 ```

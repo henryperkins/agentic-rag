@@ -777,3 +777,19 @@ select:focus-visible {
 .markdown-content .hljs-strong {
   font-weight: bold;
 }
+
+/* Citation marker styling - format: [cite:doc_id:chunk_index] */
+.chat-output :is(p, li, div):has(+ *) {
+  display: inline;
+}
+
+.chat-output code:is([data-cite], [class*="cite"]) {
+  background: var(--color-accent);
+  color: white;
+  font-size: 0.75em;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-weight: 600;
+  vertical-align: super;
+  line-height: 0;
+}

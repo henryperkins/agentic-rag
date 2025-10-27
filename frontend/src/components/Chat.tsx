@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
 import { useChat } from "../hooks/useChat";
 import { VerificationBadge } from "./VerificationBadge";
 import { Feedback } from "./Feedback";
@@ -86,12 +88,18 @@ export function Chat() {
       )}
 
       <section
-        className="chat-output"
+        className="chat-output markdown-content"
         aria-live="polite"
         aria-busy={busy}
         aria-label="Assistant response"
       >
-        {text || "Ask something to get started."}
+        {text ? (
+          <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
+            {text}
+          </ReactMarkdown>
+        ) : (
+          "Ask something to get started."
+        )}
       </section>
 
       {citations.length > 0 && (
