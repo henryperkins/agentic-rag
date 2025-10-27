@@ -6,6 +6,7 @@ import {
   EMBEDDING_DIMENSIONS,
 } from "../config/constants";
 import { withRetry } from "../utils/retry";
+import { withSpan } from "../config/otel";
 
 // Initialize Qdrant client
 export const qdrantClient = new QdrantClient({
@@ -18,32 +19,38 @@ export const qdrantClient = new QdrantClient({
  * Creates the collection if it doesn't exist
  */
 export async function initQdrantCollection() {
-  try {
-    const collections = await qdrantClient.getCollections();
-    const exists = collections.collections.some(
-      (c) => c.name === QDRANT_COLLECTION
-    );
+  return await withSpan(
+    "qdrant.initCollection",
+    async () => {
+      try {
+        const collections = await qdrantClient.getCollections();
+        const exists = collections.collections.some(
+          (c) => c.name === QDRANT_COLLECTION
+        );
 
-    if (!exists) {
-      console.log(`Creating Qdrant collection: ${QDRANT_COLLECTION}`);
-      await qdrantClient.createCollection(QDRANT_COLLECTION, {
-        vectors: {
-          size: EMBEDDING_DIMENSIONS,
-          distance: "Cosine",
-        },
-        optimizers_config: {
-          default_segment_number: 2,
-        },
-        replication_factor: 2,
-      });
-      console.log(`✓ Created Qdrant collection: ${QDRANT_COLLECTION}`);
-    } else {
-      console.log(`✓ Qdrant collection exists: ${QDRANT_COLLECTION}`);
-    }
-  } catch (error) {
-    console.error("Failed to initialize Qdrant collection:", error);
-    throw error;
-  }
+        if (!exists) {
+          console.log(`Creating Qdrant collection: ${QDRANT_COLLECTION}`);
+          await qdrantClient.createCollection(QDRANT_COLLECTION, {
+            vectors: {
+              size: EMBEDDING_DIMENSIONS,
+              distance: "Cosine",
+            },
+            optimizers_config: {
+              default_segment_number: 2,
+            },
+            replication_factor: 2,
+          });
+          console.log(`✓ Created Qdrant collection: ${QDRANT_COLLECTION}`);
+        } else {
+          console.log(`✓ Qdrant collection exists: ${QDRANT_COLLECTION}`);
+        }
+      } catch (error) {
+        console.error("Failed to initialize Qdrant collection:", error);
+        throw error;
+      }
+    },
+    { collection: QDRANT_COLLECTION, url: QDRANT_URL }
+  );
 }
 
 /**
@@ -64,26 +71,32 @@ export async function insertChunkQdrant(
   embedding: number[],
   source: string | null
 ): Promise<void> {
-  await withRetry(
+  return await withSpan(
+    "qdrant.insertChunk",
     async () => {
-      await qdrantClient.upsert(QDRANT_COLLECTION, {
-        wait: true,
-        points: [
-          {
-            id: chunkId, // Use Postgres chunk ID as Qdrant point ID
-            vector: embedding,
-            payload: {
-              chunk_id: chunkId,
-              document_id: documentId,
-              chunk_index: chunkIndex,
-              content: content,
-              source: source,
-            },
-          },
-        ],
-      });
+      await withRetry(
+        async () => {
+          await qdrantClient.upsert(QDRANT_COLLECTION, {
+            wait: true,
+            points: [
+              {
+                id: chunkId, // Use Postgres chunk ID as Qdrant point ID
+                vector: embedding,
+                payload: {
+                  chunk_id: chunkId,
+                  document_id: documentId,
+                  chunk_index: chunkIndex,
+                  content: content,
+                  source: source,
+                },
+              },
+            ],
+          });
+        },
+        { maxRetries: 3, initialDelayMs: 200 }
+      );
     },
-    { maxRetries: 3, initialDelayMs: 200 }
+    { collection: QDRANT_COLLECTION, documentId, chunkIndex, contentLength: content.length }
   );
 }
 
@@ -106,20 +119,26 @@ export async function vectorSearchQdrant(
   queryEmbedding: number[],
   k: number
 ): Promise<QdrantVectorResult[]> {
-  const results = await qdrantClient.search(QDRANT_COLLECTION, {
-    vector: queryEmbedding,
-    limit: k,
-    with_payload: true,
-  });
+  return await withSpan(
+    "qdrant.search",
+    async () => {
+      const results = await qdrantClient.search(QDRANT_COLLECTION, {
+        vector: queryEmbedding,
+        limit: k,
+        with_payload: true,
+      });
 
-  return results.map((hit) => ({
-    chunk_id: hit.payload?.chunk_id as string,
-    document_id: hit.payload?.document_id as string,
-    chunk_index: hit.payload?.chunk_index as number,
-    content: hit.payload?.content as string,
-    source: (hit.payload?.source as string) || null,
-    score: hit.score,
-  }));
+      return results.map((hit) => ({
+        chunk_id: hit.payload?.chunk_id as string,
+        document_id: hit.payload?.document_id as string,
+        chunk_index: hit.payload?.chunk_index as number,
+        content: hit.payload?.content as string,
+        source: (hit.payload?.source as string) || null,
+        score: hit.score,
+      }));
+    },
+    { collection: QDRANT_COLLECTION, k }
+  );
 }
 
 /**
@@ -128,15 +147,21 @@ export async function vectorSearchQdrant(
  * @param chunkId - UUID of the chunk to delete
  */
 export async function deleteChunkQdrant(chunkId: string): Promise<void> {
-  try {
-    await qdrantClient.delete(QDRANT_COLLECTION, {
-      wait: true,
-      points: [chunkId],
-    });
-  } catch (error) {
-    console.error(`Failed to delete chunk ${chunkId} from Qdrant:`, error);
-    // Don't throw - this is best-effort cleanup
-  }
+  await withSpan(
+    "qdrant.deleteChunk",
+    async () => {
+      try {
+        await qdrantClient.delete(QDRANT_COLLECTION, {
+          wait: true,
+          points: [chunkId],
+        });
+      } catch (error) {
+        console.error(`Failed to delete chunk ${chunkId} from Qdrant:`, error);
+        // Don't throw - this is best-effort cleanup
+      }
+    },
+    { collection: QDRANT_COLLECTION, chunkId }
+  );
 }
 
 /**
@@ -144,23 +169,29 @@ export async function deleteChunkQdrant(chunkId: string): Promise<void> {
  * @param documentId - UUID of the document to delete
  */
 export async function deleteDocumentQdrant(documentId: string): Promise<void> {
-  await withRetry(
+  return await withSpan(
+    "qdrant.deleteDocument",
     async () => {
-      await qdrantClient.delete(QDRANT_COLLECTION, {
-        wait: true,
-        filter: {
-          must: [
-            {
-              key: "document_id",
-              match: {
-                value: documentId,
-              },
+      await withRetry(
+        async () => {
+          await qdrantClient.delete(QDRANT_COLLECTION, {
+            wait: true,
+            filter: {
+              must: [
+                {
+                  key: "document_id",
+                  match: {
+                    value: documentId,
+                  },
+                },
+              ],
             },
-          ],
+          });
         },
-      });
+        { maxRetries: 3, initialDelayMs: 200 }
+      );
     },
-    { maxRetries: 3, initialDelayMs: 200 }
+    { collection: QDRANT_COLLECTION, documentId }
   );
 }
 
@@ -168,10 +199,16 @@ export async function deleteDocumentQdrant(documentId: string): Promise<void> {
  * Get collection info and stats
  */
 export async function getQdrantStats() {
-  const info = await qdrantClient.getCollection(QDRANT_COLLECTION);
-  return {
-    vectors_count: info.vectors_count,
-    points_count: info.points_count,
-    status: info.status,
-  };
+  return await withSpan(
+    "qdrant.getStats",
+    async () => {
+      const info = await qdrantClient.getCollection(QDRANT_COLLECTION);
+      return {
+        vectors_count: info.vectors_count,
+        points_count: info.points_count,
+        status: info.status,
+      };
+    },
+    { collection: QDRANT_COLLECTION }
+  );
 }

@@ -1,10 +1,10 @@
 // Layer 2/3: Agent Registry
 import { createHash } from "crypto";
 import { hybridRetrieve, type RetrievedChunk } from "../retrieval";
-import { gradeChunks, verifyAnswer } from "../verifier";
+import { gradeChunks, gradeChunksWithScores, verifyAnswer } from "../verifier";
 import { openaiClient } from "../../config/openai";
 import { runSqlAgent } from "../executors/sql";
-import { performWebSearch } from "../webSearch";
+import { performWebSearch, performWebSearchStream } from "../webSearch";
 import {
   ENABLE_SQL_AGENT,
   ENABLE_WEB_SEARCH,
@@ -32,7 +32,7 @@ export const Agents = {
     },
     async webRetrieve(query: string): Promise<RetrievedChunk[]> {
       if (!ENABLE_WEB_SEARCH) return [];
-      const webResults = await performWebSearch(query, 5);
+      const { chunks: webResults } = await performWebSearch(query, 5);
       return webResults.map((res, idx) => {
         const hash = createHash("sha1")
           .update(res.url || `${query}-${idx}`)
@@ -52,13 +52,91 @@ export const Agents = {
           chunk_index: idx,
           content: `${res.title}\n\n${res.snippet}`,
           source: res.url || res.title,
-          score: res.score
+          score: res.score,
+          citationStart: res.citationStart,
+          citationEnd: res.citationEnd
         };
       });
+    },
+    async webRetrieveWithMetadata(
+      query: string,
+      allowedDomains?: string[]
+    ): Promise<{
+      chunks: RetrievedChunk[];
+      metadata: { searchQuery?: string; domainsSearched?: string[]; allSources?: string[] };
+    }> {
+      if (!ENABLE_WEB_SEARCH) return { chunks: [], metadata: {} };
+      const { chunks: webResults, metadata } = await performWebSearch(query, 5, allowedDomains);
+
+      const chunks = webResults.map((res, idx) => {
+        const hash = createHash("sha1")
+          .update(res.url || `${query}-${idx}`)
+          .digest("hex");
+        let docId = res.url || `web:${idx}`;
+        if (res.url) {
+          try {
+            const url = new URL(res.url);
+            docId = url.hostname;
+          } catch {
+            docId = res.url;
+          }
+        }
+        return {
+          id: `web:${hash}`,
+          document_id: docId,
+          chunk_index: idx,
+          content: `${res.title}\n\n${res.snippet}`,
+          source: res.url || res.title,
+          score: res.score,
+          citationStart: res.citationStart,
+          citationEnd: res.citationEnd
+        };
+      });
+
+      return { chunks, metadata };
+    },
+    async webRetrieveWithMetadataStream(
+      query: string,
+      allowedDomains: string[] | undefined,
+      onProgress: (event: { type: string; data?: any }) => void
+    ): Promise<{
+      chunks: RetrievedChunk[];
+      metadata: { searchQuery?: string; domainsSearched?: string[]; allSources?: string[] };
+    }> {
+      if (!ENABLE_WEB_SEARCH) return { chunks: [], metadata: {} };
+      const { chunks: webResults, metadata } = await performWebSearchStream(query, 5, allowedDomains, onProgress);
+
+      const chunks = webResults.map((res, idx) => {
+        const hash = createHash("sha1")
+          .update(res.url || `${query}-${idx}`)
+          .digest("hex");
+        let docId = res.url || `web:${idx}`;
+        if (res.url) {
+          try {
+            const url = new URL(res.url);
+            docId = url.hostname;
+          } catch {
+            docId = res.url;
+          }
+        }
+        return {
+          id: `web:${hash}`,
+          document_id: docId,
+          chunk_index: idx,
+          content: `${res.title}\n\n${res.snippet}`,
+          source: res.url || res.title,
+          score: res.score,
+          citationStart: res.citationStart,
+          citationEnd: res.citationEnd
+        };
+      });
+
+      return { chunks, metadata };
     }
   },
   processing: {
     gradeChunks,
+    gradeChunksWithScores,
     async summarize(text: string) {
       const content = await openaiClient.chat([
         { role: "system", content: "Summarize succinctly." },

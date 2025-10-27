@@ -8,6 +8,67 @@ import dotenv from "dotenv";
 // Load environment variables from .env file
 dotenv.config();
 
+// --- OpenTelemetry bootstrap for CLI ingestion (optional) ---
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
+import { Resource } from "@opentelemetry/resources";
+import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { trace, context } from "@opentelemetry/api";
+
+const ENABLE_OTEL = process.env.ENABLE_OTEL === "true";
+if (ENABLE_OTEL) {
+  const serviceName = process.env.OTEL_SERVICE_NAME || "rag-chat-ingest";
+  const traceExporter = new OTLPTraceExporter({
+    url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://localhost:4318/v1/traces",
+  });
+  const sdk = new NodeSDK({
+    resource: new Resource({
+      [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
+    }),
+    traceExporter,
+    instrumentations: [getNodeAutoInstrumentations()],
+  });
+  try {
+    sdk.start();
+    // eslint-disable-next-line no-console
+    console.log(`[otel] NodeSDK started (${serviceName}) [ingestSamples]`);
+  } catch (err) {
+    console.error("[otel] NodeSDK start failed [ingestSamples]", err);
+  }
+  const shutdown = () => {
+    sdk
+      .shutdown()
+      .then(() => console.log("[otel] NodeSDK shut down [ingestSamples]"))
+      .catch((err) => console.error("[otel] NodeSDK shutdown error [ingestSamples]", err));
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+}
+
+// Minimal helpers mirroring backend/src/config/otel.ts
+const tracer = trace.getTracer("rag-chat.ingest");
+async function withSpan(name, fn, attrs) {
+  return await tracer.startActiveSpan(name, async (span) => {
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) span.setAttribute(k, v);
+    }
+    try {
+      const res = await fn();
+      return res;
+    } catch (e) {
+      span.recordException(e);
+      span.setAttribute("error", true);
+      throw e;
+    } finally {
+      span.end();
+    }
+  });
+}
+function addEvent(name, attrs) {
+  const span = trace.getSpan(context.active());
+  span?.addEvent(name, attrs);
+}
 const DATABASE_URL = process.env.DATABASE_URL || "postgresql://rag:rag@localhost:5432/ragchat";
 const EMBEDDING_DIMENSIONS = Number(process.env.EMBEDDING_DIMENSIONS || 1536);
 const CHUNK_SIZE = Number(process.env.CHUNK_SIZE || 1000);
@@ -133,7 +194,11 @@ async function main() {
   // Initialize Qdrant collection if dual-store enabled
   if (USE_DUAL_VECTOR_STORE) {
     console.log("Dual vector store enabled, initializing Qdrant...");
-    await initQdrantCollection();
+    await withSpan(
+      "ingest.qdrant.init",
+      () => initQdrantCollection(),
+      { collection: QDRANT_COLLECTION }
+    );
   }
 
   const client = await pool.connect();
@@ -145,26 +210,41 @@ async function main() {
 
     for (const f of files) {
       if (!f.endsWith(".md") && !f.endsWith(".txt")) continue;
-      const p = path.join(samplesDir, f);
-      const content = await fs.readFile(p, "utf8");
-      const chunks = chunkText(content);
-      const embs = await mockEmbed(chunks, EMBEDDING_DIMENSIONS);
+      await withSpan(
+        "ingest.file",
+        async () => {
+          const p = path.join(samplesDir, f);
+          const content = await fs.readFile(p, "utf8");
+          const chunks = chunkText(content);
+          const embs = await withSpan(
+            "ingest.embedBatch",
+            () => mockEmbed(chunks, EMBEDDING_DIMENSIONS),
+            { file: f, chunks: chunks.length }
+          );
 
-      const title = path.basename(f).replace(/\.(md|txt)$/i, "");
-      const docId = await insertDocument(client, title, f);
+          const title = path.basename(f).replace(/\.(md|txt)$/i, "");
+          const docId = await insertDocument(client, title, f);
 
-      for (let i = 0; i < chunks.length; i++) {
-        // Insert into Postgres and get chunk ID
-        const chunkId = await insertChunk(client, docId, i, chunks[i], embs[i]);
+          for (let i = 0; i < chunks.length; i++) {
+            // Insert into Postgres and get chunk ID
+            const chunkId = await insertChunk(client, docId, i, chunks[i], embs[i]);
 
-        // Also insert into Qdrant if dual-store enabled
-        await insertChunkQdrant(chunkId, docId, i, chunks[i], embs[i], f);
+            // Also insert into Qdrant if dual-store enabled
+            await insertChunkQdrant(chunkId, docId, i, chunks[i], embs[i], f);
 
-        countChunks++;
-      }
-      countDocs++;
+            countChunks++;
+          }
+          countDocs++;
+        },
+        { file: f }
+      );
     }
 
+    addEvent("ingest.samples.completed", {
+      documents: countDocs,
+      chunks: countChunks,
+      dualStore: USE_DUAL_VECTOR_STORE
+    });
     console.log(`Ingested ${countDocs} documents with ${countChunks} chunks.`);
     if (USE_DUAL_VECTOR_STORE) {
       console.log(`✓ Data replicated to both Postgres and Qdrant`);

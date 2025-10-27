@@ -39,7 +39,153 @@
 ## Web Search Agent (Layer 7)
 
 **Trigger:** Recency indicators in query or empty local results
-**Source:** OpenAI hosted `web_search_preview` tool
+**Source:** OpenAI hosted `web_search` tool (GA)
 **Location Awareness:** Optional approximate location (city/region/country/timezone)
+**Domain Filtering:** Restrict to up to 20 allowed domains for trusted sources
+**Citation Extraction:** Automatic inline citations with URLs, titles, and relevance scores
+**Metadata:** Includes search query, domains searched, and all sources consulted
 **Normalization:** Extracts domain as `document_id`, creates SHA-1 hash IDs
 **Caching:** Bypassed for freshness (retrieval cache disabled when web active)
+
+### New Features (2025 Upgrade)
+
+1. **GA Tool (`web_search`)**: Upgraded from `web_search_preview` to generally available tool
+2. **Citation Annotations**: Automatic extraction of inline citations with:
+   - `citationStart` / `citationEnd`: Exact position in response text
+   - `title`: Page title from OpenAI's search
+   - `url`: Source URL
+   - `relevance`: Position-based relevance score
+3. **Search Metadata**: Tracks comprehensive search information:
+   - `searchQuery`: Actual query sent to search (may differ from user query)
+   - `domainsSearched`: Domains that were queried
+   - `allSources`: Complete list of URLs consulted (beyond just citations)
+4. **Domain Filtering**: Configure `WEB_SEARCH_ALLOWED_DOMAINS` to restrict to trusted sources:
+   ```bash
+   # Example: Only search academic and government sites
+   WEB_SEARCH_ALLOWED_DOMAINS=wikipedia.org,nih.gov,edu
+   ```
+5. **Enhanced Transparency**: Frontend can display:
+   - Inline citations with clickable links
+   - "Sources consulted" section showing all URLs
+   - Domain filtering status
+
+### Configuration
+
+```bash
+# In backend/.env
+ENABLE_WEB_SEARCH=true
+WEB_SEARCH_CONTEXT_SIZE=medium  # low | medium | high
+WEB_SEARCH_ALLOWED_DOMAINS=wikipedia.org,github.com,stackoverflow.com
+
+# Optional location hints
+WEB_SEARCH_CITY=San Francisco
+WEB_SEARCH_REGION=California
+WEB_SEARCH_COUNTRY=US
+WEB_SEARCH_TIMEZONE=America/Los_Angeles
+```
+
+### API Response Format
+
+```typescript
+{
+  chunks: [
+    {
+      title: "Page Title",
+      url: "https://example.com/page",
+      snippet: "Relevant excerpt from page",
+      score: 1.0,
+      relevance: 1.0,
+      citationStart: 123,  // NEW
+      citationEnd: 456     // NEW
+    }
+  ],
+  metadata: {  // NEW
+    searchQuery: "latest AI developments",
+    domainsSearched: ["example.com", "wikipedia.org"],
+    allSources: [
+      "https://example.com/page1",
+      "https://example.com/page2",
+      "https://wikipedia.org/AI"
+    ]
+  }
+}
+```
+
+## Query Classifier (Layer 2) - LLM Mode
+
+**NEW:** The classifier now supports LLM-based intelligent routing alongside the existing heuristic mode.
+
+### Configuration
+```bash
+# In backend/.env
+USE_LLM_CLASSIFIER=true   # Enable LLM routing (default: false)
+```
+
+### Modes
+
+**Heuristic Mode** (default, `USE_LLM_CLASSIFIER=false`):
+- Fast, zero-cost keyword-based routing
+- Detection rules:
+  - **SQL**: Keywords like SELECT, COUNT, WHERE, GROUP BY, JOIN
+  - **Web**: Recency indicators (latest, today, 2024, 2025, current, news, recent)
+  - **Complexity**: Word count + operator keywords (join, compare, why, how, aggregate)
+- Trade-off: May miss domain-specific jargon or complex intent
+
+**LLM Mode** (`USE_LLM_CLASSIFIER=true`):
+- Intelligent routing via GPT-4o-mini with structured JSON output
+- Context-aware classification beyond simple keywords
+- Automatic fallback to heuristics on error/timeout
+- Cost: ~$0.0001 per query (~$100/month at 1M queries)
+
+### Output Format
+```typescript
+{
+  mode: "retrieve" | "direct",        // Retrieve docs or answer directly
+  complexity: "low" | "medium" | "high",
+  targets: ["vector", "sql", "web"]   // Which retrieval sources to use
+}
+```
+
+### When to Use LLM Mode
+
+✅ Enable when:
+- Users ask questions with creative or ambiguous phrasing
+- Domain-specific terminology not in keyword lists
+- Classification accuracy > speed trade-off acceptable
+- Multi-modal retrieval needs (vector + sql + web)
+
+❌ Stick to heuristic when:
+- Sub-50ms routing latency required
+- Cost optimization is priority
+- Query patterns are predictable
+- Keyword matching suffices
+
+### Testing
+```bash
+npm -w backend run test -- classifier.test.ts
+```
+
+Tests cover:
+- Heuristic rule validation (24 test cases)
+- LLM structured output parsing
+- Fallback mechanism
+- Target selection (vector/sql/web)
+- Complexity assessment
+- Mode selection (retrieve vs direct)
+
+### Monitoring
+Watch SSE logs for classification decisions:
+```json
+{
+  "type": "agent_log",
+  "role": "planner",
+  "message": "Route: retrieve, complexity: medium, targets: vector+web",
+  "ts": 1234567890
+}
+```
+
+### Related Files
+- `backend/src/services/orchestration/classifier.ts` - Classification logic
+- `backend/src/config/env.ts` - Configuration
+- `backend/tests/classifier.test.ts` - Test suite
+- `CLAUDE.md` - Full system documentation

@@ -1,4 +1,5 @@
-// Layer 1: Backend Server Entry Point
+/* Layer 1: Backend Server Entry Point */
+import "./config/otel"; // Bootstrap OpenTelemetry before loading instrumented modules
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
@@ -53,6 +54,9 @@ async function build() {
 
   await app.register(cors, { origin: env.CORS_ORIGIN, credentials: true });
   await app.register(multipart);
+
+  // Telemetry handled by OpenTelemetry NodeSDK (HTTP/Fastify instrumentation)
+  // Request spans and context propagation are automatic; no manual hook needed.
 
   // Health check routes (no auth required)
   await healthRoutes(app);

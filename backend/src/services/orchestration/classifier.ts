@@ -13,7 +13,10 @@ export type RouteDecision = {
 /**
  * Heuristic-based query classification (fast, no API cost)
  */
-export function classifyQueryHeuristic(q: string): RouteDecision {
+export function classifyQueryHeuristic(
+  q: string,
+  opts: { useRag: boolean; useWeb: boolean }
+): RouteDecision {
   const len = q.split(/\s+/).length;
   const hasOps = /join|aggregate|compare|timeline|pipeline|why|how/i.test(q);
   const sqlIndicators = /\b(select|from|table|column|join|where|group by|order by|count|sum|avg|max|min)\b/i.test(
@@ -24,9 +27,26 @@ export function classifyQueryHeuristic(q: string): RouteDecision {
   );
   const complexity = hasOps ? (len > 12 ? "high" : "medium") : len < 6 ? "low" : "medium";
   const mode: "retrieve" | "direct" = hasOps || len > 6 ? "retrieve" : "direct";
-  const targets: RetrievalTarget[] = ["vector"];
-  if (sqlIndicators) targets.push("sql");
-  if (recencyIndicators) targets.push("web");
+
+  const targets: RetrievalTarget[] = [];
+  // Respect user's choice for RAG
+  if (opts.useRag) {
+    targets.push("vector");
+  }
+  // Respect user's choice for Web, but also allow heuristic trigger if not explicitly disabled
+  if (opts.useWeb || (recencyIndicators && opts.useWeb !== false)) {
+    targets.push("web");
+  }
+  if (sqlIndicators) {
+    targets.push("sql");
+  }
+
+  // If no targets are selected for a retrieval query, default to vector search.
+  // This maintains original behavior for simple queries with default settings.
+  if (targets.length === 0 && mode === "retrieve") {
+    targets.push("vector");
+  }
+
   const uniqueTargets = Array.from(new Set(targets));
   return { mode, complexity, targets: uniqueTargets };
 }
@@ -34,7 +54,10 @@ export function classifyQueryHeuristic(q: string): RouteDecision {
 /**
  * LLM-based query classification (intelligent, uses API)
  */
-async function classifyQueryLLM(q: string): Promise<RouteDecision> {
+async function classifyQueryLLM(
+  q: string,
+  opts: { useRag: boolean; useWeb: boolean }
+): Promise<RouteDecision> {
   const prompt = `You are a query router for a RAG system. Analyze this user query and determine:
 1. MODE: Should we retrieve documents ("retrieve") or answer directly ("direct")?
    - Use "retrieve" for questions requiring factual lookup, technical details, or domain knowledge
@@ -46,9 +69,11 @@ async function classifyQueryLLM(q: string): Promise<RouteDecision> {
    - "high": Multi-step reasoning, aggregation, or complex analysis
 
 3. TARGETS: Which retrieval sources to use (array of: "vector", "sql", "web")
-   - "vector": Use for semantic search in document corpus
-   - "sql": Use if query asks for structured data, counts, aggregations, or database operations
-   - "web": Use if query asks for recent events, news, current information, or real-time data
+   - "vector": Use for semantic search in document corpus. This is ${opts.useRag ? "ENABLED" : "DISABLED"}.
+   - "sql": Use if query asks for structured data, counts, aggregations, or database operations.
+   - "web": Use if query asks for recent events, news, current information, or real-time data. This is ${opts.useWeb ? "ENABLED" : "DISABLED"}.
+
+You MUST respect the ENABLED/DISABLED state. Do not include a disabled target in your response.
 
 Query: "${q}"
 
@@ -85,15 +110,18 @@ Respond with ONLY valid JSON in this exact format:
 /**
  * Main classifier with LLM support and fallback to heuristics
  */
-export async function classifyQuery(q: string): Promise<RouteDecision> {
+export async function classifyQuery(
+  q: string,
+  opts: { useRag: boolean; useWeb: boolean }
+): Promise<RouteDecision> {
   if (!USE_LLM_CLASSIFIER) {
-    return classifyQueryHeuristic(q);
+    return classifyQueryHeuristic(q, opts);
   }
 
   try {
-    return await classifyQueryLLM(q);
+    return await classifyQueryLLM(q, opts);
   } catch (error) {
     console.warn("LLM classifier failed, falling back to heuristics:", error);
-    return classifyQueryHeuristic(q);
+    return classifyQueryHeuristic(q, opts);
   }
 }

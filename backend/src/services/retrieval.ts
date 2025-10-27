@@ -22,6 +22,9 @@ export interface RetrievedChunk {
   content: string;
   source: string | null;
   score: number;
+  rerankerScore?: number; // Preserve reranker's semantic score
+  citationStart?: number;
+  citationEnd?: number;
 }
 
 export async function hybridRetrieve(queryText: string, useHybrid = true): Promise<RetrievedChunk[]> {
@@ -135,13 +138,14 @@ export async function hybridRetrieve(queryText: string, useHybrid = true): Promi
     finalCount: top.length,
     topScore: top[0]?.preScore ?? null
   });
-  // Map results with source from database/Qdrant
+  // Map results with source from database/Qdrant and preserve reranker score
   return top.map((c) => ({
     id: c.id,
     document_id: c.document_id,
     chunk_index: c.chunk_index,
     content: c.content,
     source: (c as PrelimCandidate).source,
-    score: c.preScore
+    score: c.preScore,
+    rerankerScore: c.preScore // Preserve for downstream grading integration
   }));
 }

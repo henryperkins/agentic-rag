@@ -19,13 +19,21 @@ export function Chat() {
   const [agentic, setAgentic] = useState(true);
   const [hybrid, setHybrid] = useState(true);
   const [webSearch, setWebSearch] = useState(true);
+  const [domainFilter, setDomainFilter] = useState("");
+  const [showDomainFilter, setShowDomainFilter] = useState(false);
 
-  const { logs, rewrite, text, citations, verified, busy, send } = useChat();
+  const { logs, rewrite, text, citations, verified, webSearchMeta, busy, send } = useChat();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!input.trim()) return;
-    await send(input.trim(), agentic, hybrid, webSearch);
+
+    const allowedDomains = domainFilter
+      .split(",")
+      .map(d => d.trim())
+      .filter(d => d.length > 0);
+
+    await send(input.trim(), agentic, hybrid, webSearch, allowedDomains.length > 0 ? allowedDomains : undefined);
   }
 
   return (
@@ -78,8 +86,34 @@ export function Chat() {
           />
           <span>Web Search</span>
         </label>
+        <button
+          type="button"
+          className="domain-filter-toggle"
+          onClick={() => setShowDomainFilter(!showDomainFilter)}
+          aria-pressed={showDomainFilter}
+          title="Filter web search to specific domains"
+        >
+          🌐 {showDomainFilter ? "Hide" : "Filter"}
+        </button>
         <VerificationBadge verified={verified} />
       </div>
+
+      {showDomainFilter && (
+        <div className="domain-filter-input stack">
+          <label htmlFor="domain-filter">
+            <strong>Allowed Domains</strong> (comma-separated, max 20)
+          </label>
+          <input
+            id="domain-filter"
+            type="text"
+            placeholder="wikipedia.org, github.com, stackoverflow.com"
+            value={domainFilter}
+            onChange={(e) => setDomainFilter(e.target.value)}
+            aria-label="Domain filter"
+          />
+          <small>Leave empty to search all domains</small>
+        </div>
+      )}
 
       {rewrite && (
         <div>
@@ -102,12 +136,47 @@ export function Chat() {
         )}
       </section>
 
+      {webSearchMeta && (
+        <section className="stack" aria-label="Web Search Info">
+          <h3>🔍 Web Search</h3>
+          <div className="web-search-meta">
+            {webSearchMeta.searchQuery && (
+              <p>
+                <strong>Query:</strong> "{webSearchMeta.searchQuery}"
+              </p>
+            )}
+            {webSearchMeta.domainsSearched && webSearchMeta.domainsSearched.length > 0 && (
+              <p>
+                <strong>Domains Searched:</strong> {webSearchMeta.domainsSearched.join(", ")}
+              </p>
+            )}
+            {webSearchMeta.allSources && webSearchMeta.allSources.length > 0 && (
+              <details>
+                <summary>
+                  <strong>Sources Consulted ({webSearchMeta.allSources.length})</strong>
+                </summary>
+                <ul className="sources-list">
+                  {webSearchMeta.allSources.map((url, i) => (
+                    <li key={i}>
+                      <a href={url} target="_blank" rel="noopener noreferrer">
+                        {safeDisplayUrl(url)}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        </section>
+      )}
+
       {citations.length > 0 && (
         <section className="stack" aria-label="Citations">
           <h3>Citations</h3>
           <ul className="citation-list">
             {citations.map((c, i) => (
               <li key={`${c.document_id}:${c.chunk_index}:${i}`}>
+                {c.isWebSource && <span className="web-badge">🌐 Web</span>}
                 <span>doc <code>{c.document_id.slice(0, 8)}</code></span>
                 <span>chunk #{c.chunk_index}</span>
                 {c.source ? (

@@ -26,11 +26,22 @@ export interface CitationItem {
   document_id: string;
   source: string | null;
   chunk_index: number;
+  isWebSource?: boolean;
+  citationStart?: number;
+  citationEnd?: number;
 }
 
 export interface CitationsEvent {
   type: "citations";
   citations: CitationItem[];
+  ts: number;
+}
+
+export interface WebSearchMetadataEvent {
+  type: "web_search_metadata";
+  searchQuery: string;
+  domainsSearched?: string[];
+  allSources?: string[];
   ts: number;
 }
 
@@ -58,6 +69,7 @@ export type SSEOutEvent =
   | RewriteEvent
   | TokensEvent
   | CitationsEvent
+  | WebSearchMetadataEvent
   | VerificationEvent
   | FinalEvent;
 
@@ -84,6 +96,7 @@ export interface ChatRequestBody {
   useRag?: boolean;
   useHybrid?: boolean;
   useWeb?: boolean;
+  allowedDomains?: string[];
 }
 
 // Layer 14: Feedback

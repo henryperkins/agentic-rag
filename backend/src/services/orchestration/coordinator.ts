@@ -4,7 +4,11 @@ import { classifyQuery } from "./classifier";
 import { Agents } from "./registry";
 import { withSpan, addEvent } from "../../config/otel";
 import { normalize, responseCache, retrievalCache } from "../cache";
-import { MAX_VERIFICATION_LOOPS } from "../../config/constants";
+import {
+  MAX_VERIFICATION_LOOPS,
+  ALLOW_LOW_GRADE_FALLBACK,
+  CACHE_FAILURES
+} from "../../config/constants";
 
 /**
  * Cleans chunk content by removing metadata and frontmatter
@@ -59,9 +63,9 @@ function smartTruncate(text: string, maxLength: number): string {
 export async function runCoordinator(
   message: string,
   sender: (e: SSEOutEvent) => void,
-  opts: { useRag: boolean; useHybrid: boolean; useWeb: boolean }
+  opts: { useRag: boolean; useHybrid: boolean; useWeb: boolean; allowedDomains?: string[] }
 ) {
-  const decision = await classifyQuery(message);
+  const decision = await classifyQuery(message, opts);
   sender({
     type: "agent_log",
     role: "planner",
@@ -93,6 +97,9 @@ export async function runCoordinator(
   let working = message;
   const targetsKey = decision.targets.slice().sort().join("+");
   const allowWeb = opts.useWeb;
+  // Track web search state outside span for error messages
+  let usedWeb = false;
+  let webChunksFound = 0;
   while (loops <= MAX_VERIFICATION_LOOPS) {
     await withSpan("retrieve", async () => {
       const modeLabel = [
@@ -112,7 +119,8 @@ export async function runCoordinator(
       const cacheKey = normalize(`ret:${targetsKey}:${working}`);
       const canUseCache = !(allowWeb && decision.targets.includes("web"));
       let retrieved = canUseCache ? retrievalCache.get(cacheKey) : undefined;
-      let usedWeb = false;
+      let webMetadata: { searchQuery?: string; domainsSearched?: string[]; allSources?: string[] } | null = null;
+
       if (!retrieved) {
         // Only retrieve from local store if useRag is enabled
         const vectorResults = opts.useRag ? await Agents.retrieval.hybridRetrieve(working, opts.useHybrid) : [];
@@ -128,14 +136,49 @@ export async function runCoordinator(
         }
 
         if (allowWeb && (decision.targets.includes("web") || combined.length === 0)) {
-          const webResults = await withSpan(
+          const webResponse = await withSpan(
             "retrieve.web",
-            () => Agents.retrieval.webRetrieve(working),
+            () => Agents.retrieval.webRetrieveWithMetadataStream(
+              working,
+              opts.allowedDomains,
+              (event) => {
+                // Forward web search progress events to frontend
+                switch (event.type) {
+                  case 'web_search.in_progress':
+                    sender({
+                      type: "agent_log",
+                      role: "researcher",
+                      message: "Initiating web search...",
+                      ts: Date.now()
+                    });
+                    break;
+                  case 'web_search.searching':
+                    sender({
+                      type: "agent_log",
+                      role: "researcher",
+                      message: "Searching the web...",
+                      ts: Date.now()
+                    });
+                    break;
+                  case 'web_search.completed':
+                    sender({
+                      type: "agent_log",
+                      role: "researcher",
+                      message: `Web search completed (${event.data?.resultCount || 0} results).`,
+                      ts: Date.now()
+                    });
+                    break;
+                }
+              }
+            ),
             { enabled: true }
           );
-          if (webResults.length > 0) {
-            combined = combined.concat(webResults);
-            usedWeb = true;
+          // Track web search usage for error messages
+          usedWeb = true;
+          webChunksFound = webResponse.chunks.length;
+          if (webResponse.chunks.length > 0) {
+            combined = combined.concat(webResponse.chunks);
+            webMetadata = webResponse.metadata;
           }
         }
 
@@ -145,56 +188,203 @@ export async function runCoordinator(
         }
       }
 
-      if (usedWeb) {
+      if (usedWeb && webMetadata) {
+        // Emit web search metadata for frontend display
+        sender({
+          type: "web_search_metadata",
+          searchQuery: webMetadata.searchQuery || working,
+          domainsSearched: webMetadata.domainsSearched,
+          allSources: webMetadata.allSources,
+          ts: Date.now()
+        });
+
         sender({
           type: "agent_log",
           role: "researcher",
-          message: "Augmented with live web results for freshness.",
+          message: `Augmented with ${webMetadata.allSources?.length || 0} live web sources${webMetadata.searchQuery !== working ? ` (query: "${webMetadata.searchQuery}")` : ""}.`,
           ts: Date.now()
         });
       }
 
-      const grades = Agents.processing.gradeChunks(
-        working,
-        retrieved.map((r) => ({ id: r.id, content: r.content }))
-      );
+      sender({
+        type: "agent_log",
+        role: "researcher",
+        message: "Grading retrieved chunks for relevance...",
+        ts: Date.now()
+      });
+
+      // Grade chunks with semantic understanding if embeddings available
+      // Note: qEmb already computed during retrieval
+      const grades = await withSpan("grade", async () => {
+        // Use gradeChunksWithScores to get both grades and metadata
+        const { grades: gradeResult, metadata } = await Agents.processing.gradeChunksWithScores(
+          working,
+          retrieved.map((r) => ({ id: r.id, content: r.content })),
+          undefined // We don't have qEmb here, so it will use keyword-based grading for now
+        );
+
+        // Log grading metadata for observability
+        addEvent("grade.completed", {
+          method: metadata.method,
+          totalChunks: retrieved.length,
+          scores: Object.values(metadata.scores)
+        });
+
+        return gradeResult;
+      });
 
       const highs = retrieved.filter((r) => grades[r.id] === "high");
       const mediums = retrieved.filter((r) => grades[r.id] === "medium");
-      const approved = highs.length ? highs : mediums.slice(0, 3);
+      const lows = retrieved.filter((r) => grades[r.id] === "low");
+
+      // Log grade distribution for observability (negative feedback loop)
+      addEvent("grade.distribution", {
+        high: highs.length,
+        medium: mediums.length,
+        low: lows.length,
+        total: retrieved.length,
+        highIds: highs.map(h => h.id).slice(0, 5), // Sample of high-grade IDs
+        lowIds: lows.map(l => l.id).slice(0, 5) // Sample of low-grade IDs for analysis
+      });
+
+      // Prefer highs, fallback to mediums
+      let approved = highs.length ? highs : mediums.slice(0, 3);
 
       const citations = approved.map((a) => ({
         document_id: a.document_id,
         source: a.source,
-        chunk_index: a.chunk_index
+        chunk_index: a.chunk_index,
+        ...(a.citationStart !== undefined && { citationStart: a.citationStart }),
+        ...(a.citationEnd !== undefined && { citationEnd: a.citationEnd }),
+        ...(a.id.startsWith('web:') && { isWebSource: true })
       }));
       sender({ type: "citations", citations, ts: Date.now() });
 
       if (approved.length === 0) {
-        const fallback = "No supporting evidence found in the current knowledge base. Try rephrasing, expanding the corpus, or disabling hybrid retrieval.";
-        sender({ type: "agent_log", role: "researcher", message: "No supporting evidence found — returning fallback guidance.", ts: Date.now() });
-        for (const c of fallback.match(/.{1,60}/g) || []) sender({ type: "tokens", text: c, ts: Date.now() });
-        sender({ type: "verification", isValid: false, gradeSummary: grades as any, feedback: "No evidence retrieved for the query.", ts: Date.now() });
-        sender({ type: "final", text: fallback, citations: [], rewrittenQuery: working !== message ? working : undefined, verified: false, ts: Date.now() });
-        responseCache.set(key, fallback);
-        return;
+        // Enhanced fallback with graceful degradation
+        addEvent("retrieval.no_approved", {
+          totalRetrieved: retrieved.length,
+          highCount: highs.length,
+          mediumCount: mediums.length,
+          lowCount: lows.length
+        });
+
+        // Try low-grade chunks if allowed
+        if (ALLOW_LOW_GRADE_FALLBACK && lows.length > 0) {
+          sender({
+            type: "agent_log",
+            role: "researcher",
+            message: `No high or medium quality matches found. Using ${lows.length} low-confidence results with disclaimer.`,
+            ts: Date.now()
+          });
+
+          approved = lows.slice(0, 3);
+          // Continue with low-grade chunks but mark as low confidence
+        } else {
+          // Provide detailed fallback guidance with accurate web search status
+          const webSearchMsg = usedWeb
+            ? (webChunksFound > 0
+                ? `\n- Web search returned ${webChunksFound} results but none met quality threshold`
+                : `\n- Web search returned no results`)
+            : (allowWeb
+                ? `\n- Web search was not invoked (local results found but low quality)`
+                : `\n- Enable web search for broader coverage`);
+
+          const detailedFeedback = [
+            `No supporting evidence found in the current knowledge base.`,
+            `\n\n**Retrieved:** ${retrieved.length} chunks`,
+            `\n- High quality: ${highs.length}`,
+            `\n- Medium quality: ${mediums.length}`,
+            `\n- Low quality: ${lows.length}`,
+            `\n\n**Suggestions:**`,
+            `\n- Try rephrasing your question`,
+            `\n- Use different keywords or terminology`,
+            `\n- Expand the document corpus`,
+            webSearchMsg
+          ].join("");
+
+          sender({
+            type: "agent_log",
+            role: "researcher",
+            message: `No supporting evidence found. Returning detailed guidance.`,
+            ts: Date.now()
+          });
+
+          for (const c of detailedFeedback.match(/.{1,60}/g) || []) {
+            sender({ type: "tokens", text: c, ts: Date.now() });
+          }
+
+          sender({
+            type: "verification",
+            isValid: false,
+            gradeSummary: grades as any,
+            feedback: `No high or medium quality evidence retrieved. Retrieved ${retrieved.length} chunks but none met quality threshold.`,
+            ts: Date.now()
+          });
+
+          sender({
+            type: "final",
+            text: detailedFeedback,
+            citations: [],
+            rewrittenQuery: working !== message ? working : undefined,
+            verified: false,
+            ts: Date.now()
+          });
+
+          // Only cache failures if configured (default: don't cache to allow fresh docs)
+          if (CACHE_FAILURES) {
+            responseCache.set(key, detailedFeedback);
+          }
+
+          return;
+        }
       }
 
-      // Writer (simple extractive compose from approved)
-      const parts: string[] = approved.slice(0, 3).map((ev) => {
-        // Clean metadata and frontmatter
-        const cleaned = cleanChunkContent(ev.content);
-        // Smart truncate to avoid breaking markdown (increased limit from 260 to 500)
-        const snip = smartTruncate(cleaned, 500);
-        return `${snip}\n\n*[Source: ${ev.chunk_index + 1}]*`;
+      sender({
+        type: "agent_log",
+        role: "writer",
+        message: "Composing answer from approved evidence...",
+        ts: Date.now()
       });
-      const answer = `**Answer (from evidence):**\n\n${parts.join("\n\n---\n\n")}`;
+      // Writer (simple extractive compose from approved)
+      const answer = await withSpan("answer", () => {
+        const parts: string[] = approved.slice(0, 3).map((ev) => {
+          // Clean metadata and frontmatter
+          const cleaned = cleanChunkContent(ev.content);
+          // Smart truncate to avoid breaking markdown (increased limit from 260 to 500)
+          const snip = smartTruncate(cleaned, 500);
+          return `${snip}\n\n*[Source: ${ev.chunk_index + 1}]*`;
+        });
+        return `**Answer (from evidence):**\n\n${parts.join("\n\n---\n\n")}`;
+      });
 
       // Stream
       for (const c of answer.match(/.{1,60}/g) || []) sender({ type: "tokens", text: c, ts: Date.now() });
 
-      const verify = Agents.quality.verifyAnswer(answer, approved.map((a) => ({ id: a.id, content: a.content })));
-      sender({ type: "verification", isValid: verify.isValid, gradeSummary: grades as any, feedback: verify.feedback, ts: Date.now() });
+      sender({
+        type: "agent_log",
+        role: "critic",
+        message: "Verifying answer against evidence...",
+        ts: Date.now()
+      });
+      const verify = await withSpan("verify", () =>
+        Agents.quality.verifyAnswer(answer, approved.map((a) => ({ id: a.id, content: a.content })))
+      );
+
+      // Log verification metadata
+      addEvent("verification.completed", {
+        isValid: verify.isValid,
+        confidence: verify.confidence,
+        approvedChunks: approved.length
+      });
+
+      sender({
+        type: "verification",
+        isValid: verify.isValid,
+        gradeSummary: grades as any,
+        feedback: verify.feedback,
+        ts: Date.now()
+      });
 
       if (verify.isValid || loops === MAX_VERIFICATION_LOOPS) {
         responseCache.set(key, answer);

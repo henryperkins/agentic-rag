@@ -1,31 +1,86 @@
 // Layer 7: Web Search Retrieval
-import { openaiClient, type WebSearchResult } from "../config/openai";
+import {
+  openaiClient,
+  type WebSearchResult,
+  type WebSearchMetadata
+} from "../config/openai";
 import {
   ENABLE_WEB_SEARCH,
   WEB_SEARCH_CONTEXT_SIZE,
-  WEB_SEARCH_LOCATION
+  WEB_SEARCH_LOCATION,
+  WEB_SEARCH_ALLOWED_DOMAINS
 } from "../config/constants";
 
 export interface WebSearchChunk extends WebSearchResult {
   score: number;
 }
 
+export interface WebSearchResponse {
+  chunks: WebSearchChunk[];
+  metadata: WebSearchMetadata;
+}
+
 export async function performWebSearch(
   query: string,
-  maxResults = 5
-): Promise<WebSearchChunk[]> {
-  if (!ENABLE_WEB_SEARCH) return [];
-  const trimmed = query.trim();
-  if (!trimmed) return [];
+  maxResults = 5,
+  allowedDomains?: string[]
+): Promise<WebSearchResponse> {
+  if (!ENABLE_WEB_SEARCH) {
+    return { chunks: [], metadata: {} };
+  }
 
-  const results = await openaiClient.webSearch(trimmed, {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return { chunks: [], metadata: {} };
+  }
+
+  const { results, metadata } = await openaiClient.webSearch(trimmed, {
     maxResults,
     contextSize: WEB_SEARCH_CONTEXT_SIZE,
-    location: WEB_SEARCH_LOCATION ?? undefined
+    location: WEB_SEARCH_LOCATION ?? undefined,
+    allowedDomains: allowedDomains || (WEB_SEARCH_ALLOWED_DOMAINS.length > 0 ? WEB_SEARCH_ALLOWED_DOMAINS : undefined)
   });
 
-  return results.map((r, idx) => ({
+  // Convert results to chunks, preserving relevance scores
+  const chunks = results.map((r) => ({
     ...r,
-    score: 1 / (idx + 1)
+    score: r.relevance || 1 / (results.indexOf(r) + 1)
   }));
+
+  return { chunks, metadata };
+}
+
+export async function performWebSearchStream(
+  query: string,
+  maxResults = 5,
+  allowedDomains: string[] | undefined,
+  onProgress: (event: { type: string; data?: any }) => void
+): Promise<WebSearchResponse> {
+  if (!ENABLE_WEB_SEARCH) {
+    return { chunks: [], metadata: {} };
+  }
+
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return { chunks: [], metadata: {} };
+  }
+
+  const { results, metadata } = await openaiClient.webSearchStream(
+    trimmed,
+    {
+      maxResults,
+      contextSize: WEB_SEARCH_CONTEXT_SIZE,
+      location: WEB_SEARCH_LOCATION ?? undefined,
+      allowedDomains: allowedDomains || (WEB_SEARCH_ALLOWED_DOMAINS.length > 0 ? WEB_SEARCH_ALLOWED_DOMAINS : undefined)
+    },
+    onProgress
+  );
+
+  // Convert results to chunks, preserving relevance scores
+  const chunks = results.map((r) => ({
+    ...r,
+    score: r.relevance || 1 / (results.indexOf(r) + 1)
+  }));
+
+  return { chunks, metadata };
 }

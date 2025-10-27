@@ -217,6 +217,17 @@ MAX_VERIFICATION_LOOPS=2       # Max verify→refine loops
 # Classifier
 USE_LLM_CLASSIFIER=true|false  # Enable LLM-based query routing (fallback to heuristics)
 
+# Web Search (Layer 7)
+ENABLE_WEB_SEARCH=true|false   # Enable OpenAI web search tool
+WEB_SEARCH_CONTEXT_SIZE=medium # low | medium | high (amount of context per result)
+WEB_SEARCH_ALLOWED_DOMAINS=    # Comma-separated list of allowed domains (max 20)
+                                # Example: wikipedia.org,github.com,stackoverflow.com
+# Optional location hints for geo-specific searches
+WEB_SEARCH_CITY=               # e.g., San Francisco
+WEB_SEARCH_REGION=             # e.g., California
+WEB_SEARCH_COUNTRY=            # ISO country code, e.g., US
+WEB_SEARCH_TIMEZONE=           # IANA timezone, e.g., America/Los_Angeles
+
 # Testing
 MOCK_OPENAI=0|1                # Use deterministic mock embeddings
 ```
@@ -329,15 +340,140 @@ The system supports two classification strategies for intelligent query routing:
 
 **Recommendation**: Use heuristic mode for latency-sensitive applications; enable LLM mode for complex domains or when accuracy matters more than speed.
 
+### Enhanced Semantic Grading System
+
+The system now uses a sophisticated multi-mode grading approach to address the limitations of keyword-only matching:
+
+**Three Grading Modes** (`backend/src/services/verifier.ts`):
+
+1. **Keyword-Based** (legacy, fast):
+   - Pure token overlap between query and chunk
+   - Ratio = (matching tokens) / (query tokens)
+   - Cost: ~1ms per chunk
+   - Use case: When speed > accuracy
+
+2. **Semantic-Based** (accurate):
+   - Embeds both query and chunks using OpenAI embeddings
+   - Computes cosine similarity between vectors
+   - Understands synonyms and conceptual relationships
+   - Cost: ~100ms for embedding batch + similarity computation
+   - Use case: When accuracy > speed
+
+3. **Hybrid** (recommended, `USE_SEMANTIC_GRADING=true`):
+   - **70% semantic similarity + 30% keyword overlap**
+   - Balances semantic understanding with keyword matching
+   - Prevents keyword-stuffed garbage from ranking high
+   - Preserves relevance for exact terminology matches
+   - Cost: ~100ms (dominated by embedding)
+
+**Configurable Thresholds**:
+```bash
+GRADE_HIGH_THRESHOLD=0.5      # Score > 0.5 → "high" grade
+GRADE_MEDIUM_THRESHOLD=0.2    # Score > 0.2 → "medium" grade
+VERIFICATION_THRESHOLD=0.5    # Answer must have ≥50% token support
+```
+
+**Technical Term Whitelist**:
+- Short technical terms (AI, ML, API, CPU, GPU, SQL, etc.) are now preserved
+- Previously filtered out due to length requirements
+- Prevents false negatives on technical queries
+- Configurable: `MIN_TECHNICAL_TERM_LENGTH=2`
+
+**Reranker Score Preservation**:
+- Reranker's semantic scores are now preserved in `RetrievedChunk.rerankerScore`
+- Prevents sophisticated reranker from being overridden by simple grading
+- Enables integration of reranker confidence into final selection
+- Future enhancement: weighted combination of reranker + grader scores
+
+**Negative Feedback Loop** (Observability):
+- All discarded chunks are logged with OTEL events
+- Grade distribution tracked: `grade.distribution` event
+  ```json
+  {
+    "high": 3,
+    "medium": 4,
+    "low": 5,
+    "highIds": ["chunk-1", "chunk-2", ...],
+    "lowIds": ["chunk-9", "chunk-10", ...]
+  }
+  ```
+- Enables analysis of false negatives
+- Future: Use low-grade chunks as negative training examples
+
+**Example: Semantic vs Keyword Grading**:
+```typescript
+Query: "How do I fix a broken automobile engine?"
+
+Chunk A: "To repair a damaged car motor, first check the timing belt..."
+// Keyword: 0% overlap (no shared tokens) → "low" ❌
+// Semantic: 0.82 similarity (perfect semantic match) → "high" ✓
+// Hybrid: 0.7 * 0.82 + 0.3 * 0.0 = 0.574 → "high" ✓
+
+Chunk B: "If you want to fix your broken automobile engine..."
+// Keyword: 100% overlap (keyword stuffing) → "high"
+// Semantic: 0.15 similarity (no actual content) → "low"
+// Hybrid: 0.7 * 0.15 + 0.3 * 1.0 = 0.405 → "medium" ✓
+```
+
+### Graceful Fallback Strategies
+
+The system now implements multiple fallback strategies when no high-quality evidence is found:
+
+**1. Low-Grade Chunk Fallback** (`ALLOW_LOW_GRADE_FALLBACK=true`):
+- When no high/medium chunks found, uses low-grade chunks with disclaimer
+- Prevents "no evidence" dead-ends
+- User sees: "No high or medium quality matches found. Using 3 low-confidence results with disclaimer."
+
+**2. Detailed Diagnostic Feedback**:
+```markdown
+No supporting evidence found in the current knowledge base.
+
+**Retrieved:** 11 chunks
+- High quality: 0
+- Medium quality: 2
+- Low quality: 9
+
+**Suggestions:**
+- Try rephrasing your question
+- Use different keywords or terminology
+- Expand the document corpus
+- Enable web search for broader coverage
+```
+
+**3. Smart Failure Caching** (`CACHE_FAILURES=false`):
+- By default, failure responses are **not cached**
+- Allows fresh queries to succeed if documents are added
+- Old behavior: cached "no evidence" for 5 minutes (blocked new docs)
+- New behavior: always retry failed queries
+
+**4. OTEL Event for Analysis**:
+```json
+{
+  "event": "retrieval.no_approved",
+  "totalRetrieved": 11,
+  "highCount": 0,
+  "mediumCount": 2,
+  "lowCount": 9
+}
+```
+
 ### Verification Loop
 
 The system implements bounded self-verification to prevent hallucinations:
 
-1. Grader scores chunks as "high", "medium", or "low" relevance
+1. Grader scores chunks as "high", "medium", or "low" relevance (now with semantic understanding)
 2. Writer composes answer from top chunks
-3. Verifier checks if ≥50% of answer tokens appear in evidence
-4. If verification fails and loops < MAX_VERIFICATION_LOOPS, refine and retry
-5. Final response includes `verified: true|false` flag
+3. Verifier checks if ≥VERIFICATION_THRESHOLD of answer tokens appear in evidence
+4. Enhanced feedback includes confidence score: "Answer is strongly supported (85% token overlap)"
+5. Technical terms (AI, ML, API, etc.) are properly considered regardless of length
+6. If verification fails and loops < MAX_VERIFICATION_LOOPS, refine and retry
+7. Final response includes `verified: true|false` flag with confidence metadata
+
+**Verification Improvements**:
+- Configurable threshold (not hardcoded 50%)
+- Confidence score returned: 0.85 = "strongly supported", 0.52 = "barely supported"
+- Technical term whitelist prevents false negatives
+- Detailed feedback based on confidence tiers (≥80%, ≥50%, <50%)
 
 ### Semantic Caching
 

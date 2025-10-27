@@ -48,6 +48,19 @@ export const env = {
   WEB_SEARCH_TIMEZONE: process.env.WEB_SEARCH_TIMEZONE || "",
   WEB_SEARCH_CONTEXT_SIZE:
     (process.env.WEB_SEARCH_CONTEXT_SIZE as "low" | "medium" | "high") || "medium",
+  WEB_SEARCH_ALLOWED_DOMAINS: process.env.WEB_SEARCH_ALLOWED_DOMAINS || "",
 
-  USE_LLM_CLASSIFIER: process.env.USE_LLM_CLASSIFIER === "true"
+  USE_LLM_CLASSIFIER: process.env.USE_LLM_CLASSIFIER === "true",
+
+  // Grading and Verification Configuration
+  USE_SEMANTIC_GRADING: process.env.USE_SEMANTIC_GRADING === "true",
+  GRADE_HIGH_THRESHOLD: Number(process.env.GRADE_HIGH_THRESHOLD || 0.5),
+  GRADE_MEDIUM_THRESHOLD: Number(process.env.GRADE_MEDIUM_THRESHOLD || 0.2),
+  VERIFICATION_THRESHOLD: Number(process.env.VERIFICATION_THRESHOLD || 0.5),
+  MIN_TECHNICAL_TERM_LENGTH: Number(process.env.MIN_TECHNICAL_TERM_LENGTH || 2),
+
+  // Fallback Configuration
+  ENABLE_QUERY_REWRITING: process.env.ENABLE_QUERY_REWRITING === "true",
+  ALLOW_LOW_GRADE_FALLBACK: process.env.ALLOW_LOW_GRADE_FALLBACK === "true",
+  CACHE_FAILURES: process.env.CACHE_FAILURES !== "false" // Default true for backward compat
 };

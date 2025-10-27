@@ -51,5 +51,21 @@ export const WEB_SEARCH_LOCATION = env.WEB_SEARCH_CITY ||
       timezone: env.WEB_SEARCH_TIMEZONE || undefined
     }
   : null;
+export const WEB_SEARCH_ALLOWED_DOMAINS = env.WEB_SEARCH_ALLOWED_DOMAINS
+  .split(",")
+  .map((d: string) => d.trim())
+  .filter((d: string) => Boolean(d));
 
 export const USE_LLM_CLASSIFIER = env.USE_LLM_CLASSIFIER;
+
+// Grading and Verification Configuration
+export const USE_SEMANTIC_GRADING = env.USE_SEMANTIC_GRADING;
+export const GRADE_HIGH_THRESHOLD = env.GRADE_HIGH_THRESHOLD;
+export const GRADE_MEDIUM_THRESHOLD = env.GRADE_MEDIUM_THRESHOLD;
+export const VERIFICATION_THRESHOLD = env.VERIFICATION_THRESHOLD;
+export const MIN_TECHNICAL_TERM_LENGTH = env.MIN_TECHNICAL_TERM_LENGTH;
+
+// Fallback Configuration
+export const ENABLE_QUERY_REWRITING = env.ENABLE_QUERY_REWRITING;
+export const ALLOW_LOW_GRADE_FALLBACK = env.ALLOW_LOW_GRADE_FALLBACK;
+export const CACHE_FAILURES = env.CACHE_FAILURES;
