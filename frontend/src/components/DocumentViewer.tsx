@@ -47,26 +47,32 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
   const [showFull, setShowFull] = useState(false);
 
   useEffect(() => {
+    const controller = new AbortController();
+
     async function fetchDocument() {
       setLoading(true);
       setError(null);
       setDocument(null);
       try {
         const url = showFull ? `/api/documents/${documentId}/full` : `/api/documents/${documentId}`;
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: controller.signal });
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         const data: DocumentWithChunks = await response.json();
         setDocument(data);
       } catch (e) {
+        if (controller.signal.aborted) return;
         setError(e instanceof Error ? e.message : "An unknown error occurred");
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     }
 
     fetchDocument();
+    return () => controller.abort();
   }, [documentId, showFull]);
 
   const { content: stitchedContent, isIncomplete } = useMemo(() => {

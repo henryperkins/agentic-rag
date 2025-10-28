@@ -1,5 +1,5 @@
 // Layer 2: Orchestration - Master Coordinator
-import { SSEOutEvent } from "../../../../shared/types";
+import { SSEOutEvent, FinalEvent } from "../../../../shared/types";
 import { classifyQuery } from "./classifier";
 import { Agents } from "./registry";
 import { withSpan, addEvent } from "../../config/otel";
@@ -168,13 +168,18 @@ export async function runCoordinator(
   });
 
   // Layer 7/9: semantic response cache (read-through)
-  const key = normalize(`resp:${opts.useRag}:${opts.useHybrid}:${opts.useWeb}:${message}`);
+  const domainsKey = opts.allowedDomains ? opts.allowedDomains.slice().sort().join(",") : "";
+  const key = normalize(`resp:${opts.useRag}:${opts.useHybrid}:${opts.useWeb}:${domainsKey}:${opts.webMaxResults}:${message}`);
   const cacheEnabled = process.env.MOCK_OPENAI !== "1";
   if (cacheEnabled) {
-    const cached = responseCache.get(key);
+    const cached = responseCache.get(key) as FinalEvent | undefined;
     if (cached) {
-      sender({ type: "tokens", text: cached, ts: Date.now() });
-      sender({ type: "final", text: cached, citations: [], verified: true, ts: Date.now() });
+      // Replay the cached event, splitting text into token events for streaming effect
+      const text = cached.text || "";
+      for (const chunk of text.match(/.{1,60}/g) || []) {
+        sender({ type: "tokens", text: chunk, ts: Date.now() });
+      }
+      sender({ ...cached, ts: Date.now() });
       return;
     }
   }
@@ -334,6 +339,15 @@ export async function runCoordinator(
                 info.lastAttempt = Date.now();
                 webSearchFailures.set(failureKey, info);
               }
+            } catch (err) {
+              console.error("[Coordinator] Web search failed:", err);
+              sender({
+                type: "agent_log",
+                role: "researcher",
+                message: `Web search failed. Falling back to other retrieval methods. Error: ${err instanceof Error ? err.message : "Unknown"}`,
+                ts: Date.now()
+              });
+              addEvent("web_search.error", { message: err instanceof Error ? err.message : String(err) });
             } finally {
               release();
             }
@@ -546,7 +560,15 @@ export async function runCoordinator(
           });
 
           if (CACHE_FAILURES && cacheEnabled) {
-            responseCache.set(key, detailedFeedback);
+            const finalEvent: FinalEvent = {
+              type: "final",
+              text: detailedFeedback,
+              citations: [],
+              rewrittenQuery: working !== message ? working : undefined,
+              verified: verify.isValid,
+              ts: Date.now()
+            };
+            responseCache.set(key, finalEvent);
           }
 
           completed = true;
@@ -567,9 +589,21 @@ export async function runCoordinator(
           const cleaned = cleanChunkContent(ev.content);
           // Smart truncate to avoid breaking markdown (increased limit from 260 to 500)
           const snip = smartTruncate(cleaned, 500);
-          return `${snip}\n\n*[Source: ${ev.chunk_index + 1}]*`;
+          let sourceName = `document ${ev.document_id}`;
+          if (ev.source) {
+            try {
+              sourceName = new URL(ev.source).hostname;
+            } catch {
+              sourceName = ev.source;
+            }
+          }
+          return `${snip}\n\n*[Source: ${sourceName}]*`;
         });
-        return `**Answer (from evidence):**\n\n${parts.join("\n\n---\n\n")}`;
+        // If the first part is a web search summary, don't add the prefix
+        if (approved[0]?.id.startsWith("web:")) {
+          return parts.join("\n\n");
+        }
+        return `**Answer (from evidence):**\n\n${parts.join("\n\n")}`;
       });
 
       // Stream
@@ -602,7 +636,15 @@ export async function runCoordinator(
 
       if (verify.isValid || loops === MAX_VERIFICATION_LOOPS) {
         if (cacheEnabled) {
-          responseCache.set(key, answer);
+          const finalEvent: FinalEvent = {
+            type: "final",
+            text: answer,
+            citations,
+            rewrittenQuery: working !== message ? working : undefined,
+            verified: verify.isValid,
+            ts: Date.now()
+          };
+          responseCache.set(key, finalEvent);
         }
         sender({ type: "final", text: answer, citations, rewrittenQuery: working !== message ? working : undefined, verified: verify.isValid, ts: Date.now() });
         completed = true;

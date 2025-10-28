@@ -99,5 +99,8 @@ export async function performWebSearchStream(
     score: r.relevance || 1 / (results.indexOf(r) + 1)
   }));
 
+  // Fire a final completion event with the accurate result count
+  onProgress({ type: "web_search.completed", data: { resultCount: chunks.length } });
+
   return { chunks, metadata };
 }

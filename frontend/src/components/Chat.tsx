@@ -1,6 +1,5 @@
-import React, { useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
 import { useChat } from "../hooks/useChat";
 import { VerificationBadge } from "./VerificationBadge";
 import { Feedback } from "./Feedback";
@@ -22,19 +21,43 @@ export function Chat() {
   const [domainFilter, setDomainFilter] = useState("");
   const [showDomainFilter, setShowDomainFilter] = useState(false);
   const [webMaxResults, setWebMaxResults] = useState(5);
+  const [domainError, setDomainError] = useState<string | null>(null);
+  const outputRef = useRef<HTMLDivElement | null>(null);
 
-  const { logs, rewrite, text, citations, verified, webSearchMeta, busy, send } = useChat();
+  const { logs, rewrite, text, citations, verified, webSearchMeta, busy, send, stop } = useChat();
+
+  const domainPattern = useMemo(() => /^[a-z0-9.-]+\.[a-z]{2,}$/i, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || busy) return;
 
-    const allowedDomains = domainFilter
+    const rawDomains = domainFilter
       .split(",")
-      .map(d => d.trim())
-      .filter(d => d.length > 0);
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean);
 
-    await send(input.trim(), agentic, hybrid, webSearch, allowedDomains.length > 0 ? allowedDomains : undefined, webMaxResults);
+    const validDomains = rawDomains.filter((d) => domainPattern.test(d));
+    const invalidDomains = rawDomains.filter((d) => !domainPattern.test(d));
+    const truncatedDomains = validDomains.slice(0, 20);
+
+    if (invalidDomains.length || validDomains.length > truncatedDomains.length) {
+      const invalidMsg = invalidDomains.length ? `Ignored invalid domains: ${invalidDomains.join(", ")}.` : "";
+      const truncatedMsg = validDomains.length > truncatedDomains.length ? " Limited to the first 20 domains." : "";
+      setDomainError(`${invalidMsg}${truncatedMsg}`.trim());
+    } else {
+      setDomainError(null);
+    }
+
+    await send(
+      input.trim(),
+      agentic,
+      hybrid,
+      webSearch,
+      truncatedDomains.length > 0 ? truncatedDomains : undefined,
+      webMaxResults
+    );
+    outputRef.current?.focus();
   }
 
   return (
@@ -52,11 +75,19 @@ export function Chat() {
           name="question"
           aria-label="Question"
           autoComplete="off"
+          disabled={busy}
           required
         />
-        <button type="submit" disabled={busy} aria-live="polite">
-          {busy ? "Thinking…" : "Send"}
-        </button>
+        <div className="chat-actions">
+          <button type="submit" disabled={busy} aria-live="polite">
+            {busy ? "Thinking…" : "Send"}
+          </button>
+          {busy && (
+            <button type="button" className="secondary" onClick={stop} aria-label="Stop current response">
+              Stop
+            </button>
+          )}
+        </div>
       </form>
 
       <div className="switch-group" role="group" aria-label="Retrieval options">
@@ -109,9 +140,17 @@ export function Chat() {
             type="text"
             placeholder="wikipedia.org, github.com, stackoverflow.com"
             value={domainFilter}
-            onChange={(e) => setDomainFilter(e.target.value)}
+            onChange={(e) => {
+              setDomainFilter(e.target.value);
+              setDomainError(null);
+            }}
             aria-label="Domain filter"
           />
+          {domainError && (
+            <p role="status" aria-live="polite" className="error-message">
+              {domainError}
+            </p>
+          )}
           <small>Leave empty to search all domains</small>
         </div>
       )}
@@ -147,9 +186,11 @@ export function Chat() {
         aria-live="polite"
         aria-busy={busy}
         aria-label="Assistant response"
+        tabIndex={-1}
+        ref={outputRef}
       >
         {text ? (
-          <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
+          <ReactMarkdown>
             {text}
           </ReactMarkdown>
         ) : (
@@ -198,21 +239,14 @@ export function Chat() {
             {citations.map((c, i) => (
               <li key={`${c.document_id}:${c.chunk_index}:${i}`}>
                 {c.isWebSource && <span className="web-badge">🌐 Web</span>}
-                <span>doc <code>{c.document_id.slice(0, 8)}</code></span>
-                <span>chunk #{c.chunk_index}</span>
-                {c.source ? (
-                  /^https?:\/\//i.test(c.source) ? (
-                    <span>
-                      —
-                      {" "}
-                      <a href={c.source} target="_blank" rel="noopener noreferrer">
-                        {safeDisplayUrl(c.source)}
-                      </a>
-                    </span>
-                  ) : (
-                    <span>— {c.source}</span>
-                  )
-                ) : null}
+                {c.source && c.source.startsWith("http") ? (
+                  <a href={c.source} target="_blank" rel="noopener noreferrer">
+                    {safeDisplayUrl(c.source)}
+                  </a>
+                ) : (
+                  <span>{c.source || c.document_id}</span>
+                )}
+                <span className="chunk-index"> (chunk {c.chunk_index})</span>
               </li>
             ))}
           </ul>

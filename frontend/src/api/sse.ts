@@ -5,20 +5,26 @@ import type {
   RewriteEvent,
   TokensEvent,
   VerificationEvent,
-  ChatRequestBody
+  ChatRequestBody,
+  WebSearchMetadataEvent
 } from "../../../shared/types";
 
-type AnyEvent =
+export type AnyEvent =
   | AgentLogEvent
   | CitationsEvent
   | FinalEvent
   | RewriteEvent
   | TokensEvent
-  | VerificationEvent;
+  | VerificationEvent
+  | WebSearchMetadataEvent;
 
-export function startChatSSE(body: ChatRequestBody, onEvent: (e: AnyEvent) => void) {
-  const es = new EventSourcePolyfill("/api/chat", { body: JSON.stringify(body) });
-  return es.subscribe(onEvent);
+export function startChatSSE(
+  body: ChatRequestBody,
+  onEvent: (e: AnyEvent) => void,
+  onError?: (error: Error) => void
+) {
+  const es = new EventSourcePolyfill("/api/chat", { body: JSON.stringify(body) }, onEvent, onError);
+  return es.subscribe();
 }
 
 /**
@@ -30,11 +36,16 @@ class EventSourcePolyfill {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private reconnectAttempts = 0;
 
-  constructor(private url: string, private options: { body: string }) {
+  constructor(
+    private url: string,
+    private options: { body: string },
+    private onEvent: (event: AnyEvent) => void,
+    private onError?: (error: Error) => void
+  ) {
     this.controller = new AbortController();
   }
 
-  subscribe(onEvent: (e: AnyEvent) => void) {
+  subscribe() {
     const connect = async () => {
       try {
         const res = await fetch(this.url, {
@@ -56,24 +67,25 @@ class EventSourcePolyfill {
           const { value, done } = await this.reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
-          // parse SSE lines
-          const parts = buf.split("\n\n");
+          // parse SSE lines, supporting both \n\n and \r\n\r\n boundaries
+          const parts = buf.split(/\r?\n\r?\n/);
           buf = parts.pop() || "";
           for (const chunk of parts) {
-            const lines = chunk.split("\n");
+            const lines = chunk.split(/\r?\n/);
             let eventType = "message";
             let data = "";
             for (const ln of lines) {
-              if (ln.startsWith("event:")) eventType = ln.slice(6).trim();
-              if (ln.startsWith("data:")) {
-                const piece = ln.slice(5);
+              const trimmed = ln.trim();
+              if (trimmed.startsWith("event:")) eventType = trimmed.slice(6).trim();
+              if (trimmed.startsWith("data:")) {
+                const piece = trimmed.slice(5);
                 data += (data ? "\n" : "") + piece.trim();
               }
             }
             if (data) {
               try {
                 const obj = JSON.parse(data);
-                (obj.type = eventType), onEvent(obj as AnyEvent);
+                (obj.type = eventType), this.onEvent(obj as AnyEvent);
                 this.reconnectAttempts = 0; // Reset on successful event
               } catch {
                 // ignore
@@ -81,10 +93,17 @@ class EventSourcePolyfill {
             }
           }
         }
+        if (!this.controller.signal.aborted) {
+          this.onError?.(new Error("Stream closed"));
+        }
       } catch (err: any) {
         if (this.controller.signal.aborted) return;
-        const delay = Math.pow(2, this.reconnectAttempts) * 1000;
-        setTimeout(connect, delay);
+        if (this.onError && err instanceof Error) {
+          this.onError(err);
+        }
+        const baseDelay = Math.min(30_000, Math.pow(2, this.reconnectAttempts) * 1000);
+        const jitter = Math.random() * 1000;
+        setTimeout(connect, baseDelay + jitter);
         this.reconnectAttempts++;
       }
     };
@@ -92,7 +111,15 @@ class EventSourcePolyfill {
     connect();
 
     return {
-      close: () => this.controller.abort()
+      close: () => {
+        this.controller.abort();
+        if (this.reader) {
+          this.reader.cancel().catch(() => {
+            /* no-op */
+          });
+          this.reader = null;
+        }
+      }
     };
   }
 }

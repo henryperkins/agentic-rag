@@ -1,5 +1,6 @@
 import { MOCK_OPENAI } from "./constants";
 import { createHash } from "crypto";
+import { OpenAI } from "openai";
 
 type Message = { role: "system" | "user" | "assistant"; content: string };
 
@@ -160,7 +161,6 @@ let realOpenAI: any = null;
 
 function initOpenAI() {
   if (!realOpenAI) {
-    const { OpenAI } = require("openai");
     realOpenAI = new OpenAI({
       timeout: 30000, // 30 second timeout for all API calls
       maxRetries: 2 // Retry twice on failure

@@ -15,7 +15,10 @@ function isMissingRateLimitTable(error: unknown): error is PgError {
 }
 
 export async function onRequestRateLimit(req: FastifyRequest, reply: FastifyReply) {
-  const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip;
+  // Prioritize socket remote address; only trust x-forwarded-for from known proxies.
+  // For this example, we'll consider any non-loopback IP as the source of truth.
+  const potentialIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim();
+  const ip = req.ip.includes("127.0.0.1") && potentialIp ? potentialIp : req.ip;
 
   try {
     await withTx(async (client) => {

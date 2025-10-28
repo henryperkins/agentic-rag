@@ -8,7 +8,7 @@ import type {
   VerificationEvent,
   WebSearchMetadataEvent
 } from "../../../shared/types";
-import { startChatSSE } from "../api/sse";
+import { startChatSSE, type AnyEvent } from "../api/sse";
 
 export function useChat() {
   const [logs, setLogs] = useState<AgentLogEvent[]>([]);
@@ -30,25 +30,46 @@ export function useChat() {
   }
 
   async function send(message: string, useRag: boolean, useHybrid: boolean, useWeb: boolean, allowedDomains?: string[], webMaxResults?: number) {
+    subRef.current?.close();
     reset();
     setBusy(true);
-    const sub = startChatSSE({ message, useRag, useHybrid, useWeb, allowedDomains, webMaxResults }, (e: any) => {
+    const handleEvent = (e: AnyEvent) => {
       if (e.type === "agent_log") setLogs((prev) => [...prev, e as AgentLogEvent]);
       if (e.type === "rewrite") setRewrite(e as RewriteEvent);
       if (e.type === "tokens") setText((prev) => prev + (e as TokensEvent).text);
       if (e.type === "citations") setCitations((e as CitationsEvent).citations);
       if (e.type === "web_search_metadata") setWebSearchMeta(e as WebSearchMetadataEvent);
       if (e.type === "verification") setVerified((e as VerificationEvent).isValid);
-      if (e.type === "final") setBusy(false);
-    });
+      if (e.type === "final") {
+        setBusy(false);
+        subRef.current = null;
+      }
+    };
+    const handleError = (error: Error) => {
+      if (error.message !== "Stream closed") {
+        console.error("SSE stream error", error);
+      }
+      subRef.current = null;
+      setBusy(false);
+    };
+    const sub = startChatSSE({ message, useRag, useHybrid, useWeb, allowedDomains, webMaxResults }, handleEvent, handleError);
     subRef.current = sub;
+  }
+
+  function stop() {
+    if (subRef.current) {
+      subRef.current.close();
+      subRef.current = null;
+    }
+    setBusy(false);
   }
 
   useEffect(() => {
     return () => {
       subRef.current?.close();
+      subRef.current = null;
     };
   }, []);
 
-  return { logs, rewrite, text, citations, verified, webSearchMeta, busy, send };
+  return { logs, rewrite, text, citations, verified, webSearchMeta, busy, send, stop };
 }

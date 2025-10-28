@@ -22,12 +22,21 @@ export function FileUpload() {
   const [total, setTotal] = useState(0);
 
   async function refresh(page = currentPage, size = pageSize) {
-    const limit = size;
-    const offset = (page - 1) * size;
-    const res = await fetch(`/api/documents?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`);
-    const json = await res.json();
-    setDocs(json.items || []);
-    setTotal(Number(json.total) || 0);
+    try {
+      const limit = size;
+      const offset = (page - 1) * size;
+      const res = await fetch(`/api/documents?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      setDocs(json.items || []);
+      setTotal(Number(json.total) || 0);
+    } catch (e: any) {
+      setMsg(`Failed to refresh documents: ${e?.message || String(e)}`);
+      setMsgVariant("error");
+      setTimeout(() => setMsg(null), 4000);
+    }
   }
 
   useEffect(() => {
