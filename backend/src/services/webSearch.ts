@@ -37,7 +37,7 @@ export async function performWebSearch(
     return { chunks: [], metadata: {} };
   }
 
-  const cacheKey = normalize(`websearch:${trimmed}:${allowedDomains?.join(",")}`);
+  const cacheKey = normalize(`websearch:${trimmed}:${allowedDomains?.join(",")}:${maxResults}`);
   const cached = webSearchCache.get(cacheKey);
   if (cached) {
     webSearchCacheHitsCounter.inc();

@@ -101,6 +101,7 @@ export interface ChatRequestBody {
   useHybrid?: boolean;
   useWeb?: boolean;
   allowedDomains?: string[];
+  webMaxResults?: number;
 }
 
 // Layer 14: Feedback

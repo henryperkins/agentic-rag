@@ -4,6 +4,7 @@ import { hybridRetrieve } from "../src/services/retrieval";
 import * as sql from "../src/db/sql";
 import * as qdrant from "../src/db/qdrant";
 import * as embeddings from "../src/services/embeddings";
+import * as otel from "../src/config/otel";
 
 // Mock constants to enable dual-store for tests
 vi.mock("../src/config/constants", async () => {
@@ -364,7 +365,7 @@ describe("Dual Vector Store Integration", () => {
   });
 
   describe("Error Handling and Resilience", () => {
-    it("should fail if Qdrant unavailable during retrieval (current behavior)", async () => {
+    it("should degrade to Postgres-only results when Qdrant is unavailable", async () => {
       const mockEmbedding = new Array(1536).fill(0.5);
 
       vi.spyOn(sql, "vectorSearch").mockResolvedValue([
@@ -385,11 +386,15 @@ describe("Dual Vector Store Integration", () => {
 
       vi.spyOn(sql, "trigramTitleSearch").mockResolvedValue([]);
       vi.spyOn(embeddings, "embedText").mockResolvedValue(mockEmbedding);
+      const addEventSpy = vi.spyOn(otel, "addEvent").mockImplementation(() => {});
 
-      // Current implementation propagates Qdrant errors
-      // TODO: Future enhancement - graceful degradation to Postgres-only
-      await expect(hybridRetrieve("query", true)).rejects.toThrow(
-        "Qdrant unavailable"
+      const results = await hybridRetrieve("query", true);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("pg-chunk");
+      expect(addEventSpy).toHaveBeenCalledWith(
+        "retrieval.qdrant_fallback",
+        expect.objectContaining({ error: "Qdrant unavailable" })
       );
     });
 

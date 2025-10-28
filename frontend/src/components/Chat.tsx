@@ -21,6 +21,7 @@ export function Chat() {
   const [webSearch, setWebSearch] = useState(true);
   const [domainFilter, setDomainFilter] = useState("");
   const [showDomainFilter, setShowDomainFilter] = useState(false);
+  const [webMaxResults, setWebMaxResults] = useState(5);
 
   const { logs, rewrite, text, citations, verified, webSearchMeta, busy, send } = useChat();
 
@@ -33,7 +34,7 @@ export function Chat() {
       .map(d => d.trim())
       .filter(d => d.length > 0);
 
-    await send(input.trim(), agentic, hybrid, webSearch, allowedDomains.length > 0 ? allowedDomains : undefined);
+    await send(input.trim(), agentic, hybrid, webSearch, allowedDomains.length > 0 ? allowedDomains : undefined, webMaxResults);
   }
 
   return (
@@ -112,6 +113,26 @@ export function Chat() {
             aria-label="Domain filter"
           />
           <small>Leave empty to search all domains</small>
+        </div>
+      )}
+
+      {showDomainFilter && (
+        <div className="domain-filter-input stack">
+          <label htmlFor="max-results-filter">
+            <strong>Max Results</strong> (1-8)
+          </label>
+          <input
+            id="max-results-filter"
+            type="number"
+            min="1"
+            max="8"
+            value={webMaxResults}
+            onChange={(e) => {
+              const value = parseInt(e.target.value, 10);
+              setWebMaxResults(isNaN(value) || value < 1 || value > 8 ? 5 : value);
+            }}
+            aria-label="Max results filter"
+          />
         </div>
       )}
 

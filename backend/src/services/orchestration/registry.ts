@@ -30,9 +30,9 @@ export const Agents = {
         score: row.score ?? 0
       }));
     },
-    async webRetrieve(query: string): Promise<RetrievedChunk[]> {
+    async webRetrieve(query: string, maxResults = 5): Promise<RetrievedChunk[]> {
       if (!ENABLE_WEB_SEARCH) return [];
-      const { chunks: webResults } = await performWebSearch(query, 5);
+      const { chunks: webResults } = await performWebSearch(query, maxResults);
       return webResults.map((res, idx) => {
         const hash = createHash("sha1")
           .update(res.url || `${query}-${idx}`)
@@ -60,13 +60,14 @@ export const Agents = {
     },
     async webRetrieveWithMetadata(
       query: string,
-      allowedDomains?: string[]
+      allowedDomains?: string[],
+      maxResults = 5
     ): Promise<{
       chunks: RetrievedChunk[];
       metadata: { searchQuery?: string; domainsSearched?: string[]; allSources?: string[] };
     }> {
       if (!ENABLE_WEB_SEARCH) return { chunks: [], metadata: {} };
-      const { chunks: webResults, metadata } = await performWebSearch(query, 5, allowedDomains);
+      const { chunks: webResults, metadata } = await performWebSearch(query, maxResults, allowedDomains);
 
       const chunks = webResults.map((res, idx) => {
         const hash = createHash("sha1")
@@ -98,13 +99,14 @@ export const Agents = {
     async webRetrieveWithMetadataStream(
       query: string,
       allowedDomains: string[] | undefined,
-      onProgress: (event: { type: string; data?: any }) => void
+      onProgress: (event: { type: string; data?: any }) => void,
+      maxResults = 5
     ): Promise<{
       chunks: RetrievedChunk[];
       metadata: { searchQuery?: string; domainsSearched?: string[]; allSources?: string[] };
     }> {
       if (!ENABLE_WEB_SEARCH) return { chunks: [], metadata: {} };
-      const { chunks: webResults, metadata } = await performWebSearchStream(query, 5, allowedDomains, onProgress);
+      const { chunks: webResults, metadata } = await performWebSearchStream(query, maxResults, allowedDomains, onProgress);
 
       const chunks = webResults.map((res, idx) => {
         const hash = createHash("sha1")

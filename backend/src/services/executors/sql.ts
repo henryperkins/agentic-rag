@@ -49,23 +49,46 @@ export async function runSqlAgent(request: SqlAgentRequest): Promise<SqlAgentRes
 
   const compiled = buildSQLFromPlan(plan, catalog);
 
-  if ((compiled.estimatedCost ?? 0) > SQL_AGENT_MAX_COST) {
+  // Early guard when binder provided an estimated cost (avoid DB connection on hard reject)
+  if (compiled.estimatedCost !== undefined && compiled.estimatedCost > SQL_AGENT_MAX_COST) {
     throw new Error(`Query cost estimate (${compiled.estimatedCost}) exceeds maximum (${SQL_AGENT_MAX_COST})`);
   }
 
-  const client = await pool.connect();
-  const timeout = setTimeout(() => {
+  // Helper: estimate cost via EXPLAIN (FORMAT JSON); return undefined on failure
+  const estimateQueryCost = async (client: any, sql: string, params: unknown[]): Promise<number | undefined> => {
     try {
-      client.release();
-    } catch (_) {
-      // ignore double release during timeout
+      const explainSql = `EXPLAIN (FORMAT JSON) ${sql}`;
+      const ex = await client.query(explainSql, params);
+      const row = ex.rows?.[0] as any;
+      let payload: any = row?.["QUERY PLAN"] ?? row?.query_plan ?? row?.plan ?? row;
+      if (typeof payload === "string") {
+        payload = JSON.parse(payload);
+      }
+      const planObj = Array.isArray(payload) ? payload[0] : payload;
+      const total = planObj?.Plan?.["Total Cost"] ?? planObj?.Plan?.TotalCost;
+      const n = typeof total === "number" ? total : Number(total);
+      return isFinite(n) ? n : undefined;
+    } catch {
+      return undefined;
     }
-  }, SQL_AGENT_TIMEOUT_MS);
+  };
+
+  const client = await pool.connect();
   try {
     await client.query(`SET statement_timeout = ${SQL_AGENT_TIMEOUT_MS}`);
+
     const cappedSql = `${compiled.sql}\nLIMIT ${Math.min(SQL_AGENT_MAX_ROWS, plan.limit ?? SQL_AGENT_MAX_ROWS)}`;
+
+    // Prefer binder-provided estimate; otherwise run EXPLAIN to derive one
+    const est = (compiled.estimatedCost ?? (await estimateQueryCost(client, cappedSql, compiled.params || [])));
+    if (est !== undefined) {
+      (compiled as any).estimatedCost = est;
+      if (est > SQL_AGENT_MAX_COST) {
+        throw new Error(`Query cost estimate (${est}) exceeds maximum (${SQL_AGENT_MAX_COST})`);
+      }
+    }
+
     const res = await client.query(cappedSql, compiled.params || []);
-    clearTimeout(timeout);
     return res.rows.map((row: any) => ({
       id: row.id?.toString?.() || row.id || randomUUID(),
       document_id: row.document_id ?? plan.primaryEntity,
@@ -75,7 +98,6 @@ export async function runSqlAgent(request: SqlAgentRequest): Promise<SqlAgentRes
       score: 0
     }));
   } finally {
-    clearTimeout(timeout);
     client.release();
   }
 }

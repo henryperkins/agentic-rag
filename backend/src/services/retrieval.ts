@@ -44,8 +44,16 @@ export async function hybridRetrieve(queryText: string, useHybrid = true): Promi
 
   // Dual-source vector search: Query both Postgres and Qdrant in parallel
   const pgPromise = vectorSearch(qEmb, RAG_TOP_K * 2);
-  const qdrantPromise = USE_DUAL_VECTOR_STORE
-    ? vectorSearchQdrant(qEmb, RAG_TOP_K * 2)
+  const qdrantPromise: Promise<QdrantVectorResult[]> = USE_DUAL_VECTOR_STORE
+    ? (async () => {
+      try {
+        return await vectorSearchQdrant(qEmb, RAG_TOP_K * 2);
+      } catch (err) {
+        console.warn("[Retrieval] Qdrant unavailable, Postgres-only fallback", err);
+        addEvent("retrieval.qdrant_fallback", { error: err instanceof Error ? err.message : String(err) });
+        return [];
+      }
+    })()
     : Promise.resolve([] as QdrantVectorResult[]);
   const trigramPromise = useHybrid
     ? trigramTitleSearch(queryText, RAG_TOP_K * 2)
@@ -117,11 +125,15 @@ export async function hybridRetrieve(queryText: string, useHybrid = true): Promi
   }
 
   // Deduplicate by chunk id (keep max preScore for each unique chunk)
-  // This is where dual-store benefits: if same chunk found in both sources, we keep higher score
+  // This is where dual-store benefits: if same chunk found in both sources, we combine their scores
   const dedupMap = new Map<string, PrelimCandidate>();
   for (const cand of prelim) {
     const prev = dedupMap.get(cand.id);
-    if (!prev || cand.preScore > prev.preScore) dedupMap.set(cand.id, cand);
+    if (prev) {
+      prev.preScore += cand.preScore;
+    } else {
+      dedupMap.set(cand.id, cand);
+    }
   }
 
   const cands = Array.from(dedupMap.values());

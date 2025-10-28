@@ -39,6 +39,12 @@ export class TTLCache<T> {
     this.store.set(key, { value: val, exp: Date.now() + this.ttlMs });
     this.lru.add(key);
   }
+
+  clear() {
+    this.store.clear();
+    this.lru.clear();
+    cacheHitRateGauge.labels(this.name).set(0);
+  }
 }
 
 // A tiny semantic-ish cache by normalized text key.

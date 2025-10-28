@@ -116,8 +116,19 @@ function cleanChunkContent(content: string): string {
 function smartTruncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
 
+  let truncated = text.slice(0, maxLength);
+
+  // Check if we are inside a fenced code block
+  const lastCodeBlockStart = truncated.lastIndexOf("```");
+  if (lastCodeBlockStart !== -1) {
+    const subsequentCodeBlockEnd = truncated.indexOf("```", lastCodeBlockStart + 3);
+    if (subsequentCodeBlockEnd === -1) {
+      // We are inside a code block, so close it properly
+      return truncated.trim() + "\n...\n```";
+    }
+  }
+
   // Try to truncate at a sentence boundary
-  const truncated = text.slice(0, maxLength);
   const lastPeriod = truncated.lastIndexOf(". ");
   const lastNewline = truncated.lastIndexOf("\n");
 
@@ -142,7 +153,7 @@ function smartTruncate(text: string, maxLength: number): string {
 export async function runCoordinator(
   message: string,
   sender: (e: SSEOutEvent) => void,
-  opts: { useRag: boolean; useHybrid: boolean; useWeb: boolean; allowedDomains?: string[] }
+  opts: { useRag: boolean; useHybrid: boolean; useWeb: boolean; allowedDomains?: string[]; webMaxResults?: number }
 ) {
   console.log('[Coordinator] Options received:', JSON.stringify(opts));
   const decision = await classifyQuery(message, opts);
@@ -302,16 +313,20 @@ export async function runCoordinator(
                         });
                         break;
                     }
-                  }
+                  },
+                  opts.webMaxResults
                 ),
                 { enabled: true }
               );
               // Track web search usage for error messages
               usedWeb = true;
               webChunksFound = webResponse.chunks.length;
+
+              // Always capture metadata so UI can confirm a search actually ran
+              webMetadata = webResponse.metadata;
+
               if (webResponse.chunks.length > 0) {
                 combined = combined.concat(webResponse.chunks);
-                webMetadata = webResponse.metadata;
                 webSearchFailures.delete(failureKey);
               } else {
                 const info = webSearchFailures.get(failureKey) || { count: 0, lastAttempt: 0 };

@@ -4,6 +4,7 @@ import { embedTexts } from "./embeddings";
 import { insertChunk, insertDocument, deleteChunk, deleteDocument } from "../db/sql";
 import { insertChunkQdrant, deleteChunkQdrant } from "../db/qdrant";
 import { withSpan, addEvent } from "../config/otel";
+import { responseCache, retrievalCache } from "./cache";
 
 export interface IngestResult {
   documentId: string;
@@ -72,6 +73,8 @@ export async function ingestDocument(
         }
 
         addEvent("ingest.document.completed", { documentId, chunksInserted: idx });
+        responseCache.clear();
+        retrievalCache.clear();
         return { documentId, chunksInserted: idx } as IngestResult;
       } catch (error) {
         // Cleanup: Delete entire document if any chunk failed

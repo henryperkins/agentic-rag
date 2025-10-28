@@ -29,10 +29,10 @@ export function useChat() {
     setWebSearchMeta(null);
   }
 
-  async function send(message: string, useRag: boolean, useHybrid: boolean, useWeb: boolean, allowedDomains?: string[]) {
+  async function send(message: string, useRag: boolean, useHybrid: boolean, useWeb: boolean, allowedDomains?: string[], webMaxResults?: number) {
     reset();
     setBusy(true);
-    const sub = startChatSSE({ message, useRag, useHybrid, useWeb, allowedDomains }, (e: any) => {
+    const sub = startChatSSE({ message, useRag, useHybrid, useWeb, allowedDomains, webMaxResults }, (e: any) => {
       if (e.type === "agent_log") setLogs((prev) => [...prev, e as AgentLogEvent]);
       if (e.type === "rewrite") setRewrite(e as RewriteEvent);
       if (e.type === "tokens") setText((prev) => prev + (e as TokensEvent).text);

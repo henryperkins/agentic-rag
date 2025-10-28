@@ -36,6 +36,12 @@ export function classifyQueryHeuristic(
     mode = "retrieve";
   } else if (isGreeting) {
     mode = "direct";
+  } else if (!opts.useRag && opts.useWeb) {
+    // Web-only retrieval: allow retrieve mode when RAG is off but Web is enabled
+    mode = "retrieve";
+  } else if (recencyIndicators && opts.useWeb) {
+    // Temporal queries should retrieve when web search is available
+    mode = "retrieve";
   } else if (!opts.useRag) {
     mode = "direct";
   } else {
@@ -48,7 +54,9 @@ export function classifyQueryHeuristic(
     targets.push("vector");
   }
   // Respect user's choice for Web, but also allow heuristic trigger if not explicitly disabled
-  if (opts.useWeb || (recencyIndicators && opts.useWeb !== false)) {
+  if (opts.useWeb) {
+    targets.push("web");
+  } else if (recencyIndicators && opts.useWeb !== false) {
     targets.push("web");
   }
   if (sqlIndicators) {
@@ -110,14 +118,29 @@ Respond with ONLY valid JSON in this exact format:
   // Validate and normalize
   const mode = ["retrieve", "direct"].includes(parsed.mode) ? parsed.mode : "retrieve";
   const complexity = ["low", "medium", "high"].includes(parsed.complexity) ? parsed.complexity : "medium";
-  const targets = Array.isArray(parsed.targets)
+  const rawTargets: string[] = Array.isArray(parsed.targets)
     ? parsed.targets.filter((t: string) => ["vector", "sql", "web"].includes(t))
-    : ["vector"];
+    : [];
+
+  // Enforce feature flags by intersecting with enabled targets
+  const filtered = rawTargets.filter((t: string) => {
+    if (t === "vector") return opts.useRag;
+    if (t === "web") return opts.useWeb;
+    return true; // "sql"
+  });
+
+  let finalTargets = Array.from(new Set(filtered)) as RetrievalTarget[];
+
+  // Fallback: ensure at least one target when in retrieve mode
+  if (finalTargets.length === 0 && mode === "retrieve") {
+    if (opts.useRag) finalTargets = ["vector"];
+    else if (opts.useWeb) finalTargets = ["web"];
+  }
 
   return {
     mode,
     complexity,
-    targets: Array.from(new Set(targets)) as RetrievalTarget[]
+    targets: finalTargets
   };
 }
 

@@ -19,9 +19,10 @@ export async function chatRoutes(app: FastifyInstance) {
     const useHybrid = body?.useHybrid !== false;
     const useWeb = ENABLE_WEB_SEARCH ? body?.useWeb !== false : false;
     const allowedDomains = body?.allowedDomains;
+    const webMaxResults = Math.max(1, Math.min(8, body?.webMaxResults || 5));
 
     const span = trace.getActiveSpan();
-    span?.setAttributes({ useRag, useHybrid, useWeb, allowedDomains: allowedDomains?.join(",") });
+    span?.setAttributes({ useRag, useHybrid, useWeb, allowedDomains: allowedDomains?.join(","), webMaxResults });
     addEvent("chat.request", { message });
 
     // SSE connection setup: detect client disconnect and keep-alive pings
@@ -66,7 +67,7 @@ export async function chatRoutes(app: FastifyInstance) {
     }, 30000);
 
     try {
-      await runCoordinator(message, sender, { useRag, useHybrid, useWeb, allowedDomains });
+      await runCoordinator(message, sender, { useRag, useHybrid, useWeb, allowedDomains, webMaxResults });
     } catch (err: any) {
       if (!aborted) {
         sseWrite(reply, { type: "tokens", text: `Error: ${err?.message || "unknown"}`, ts: Date.now() });
